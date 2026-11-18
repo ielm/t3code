@@ -63,15 +63,21 @@ export class CanvasService extends Context.Service<
       input: CanvasTarget & { readonly title?: string; readonly state?: CanvasState },
     ) => Effect.Effect<CanvasOpened, CanvasError>;
     /**
-     * Creates a thread canvas from a saved one, with fresh state, and asks clients to show it.
-     * `as` names the new canvas; it takes the saved name otherwise. Never replaces a canvas.
+     * Creates a thread canvas from a saved one and asks clients to show it. Its state is `state`,
+     * or empty. `as` names the new canvas; it takes the saved name otherwise. Never replaces a
+     * canvas. One from the project library starts with its functions blocked, because its commands
+     * came with the repository.
      */
     readonly openFrom: (input: {
       readonly threadId: ThreadId;
       readonly scope: CanvasLibrary.CanvasLibraryScope;
       readonly name: CanvasName;
       readonly as?: CanvasName | undefined;
+      readonly title?: string | undefined;
+      readonly state?: CanvasState | undefined;
     }) => Effect.Effect<CanvasOpened, CanvasError | CanvasLibrary.CanvasAlreadyExistsError>;
+    /** Lets a canvas from the project library run its functions. The user's decision alone. */
+    readonly trustFunctions: (target: CanvasTarget) => Effect.Effect<CanvasSnapshot, CanvasError>;
     /** Removes the canvas from every client and deletes its folder and state. */
     readonly close: (target: CanvasTarget) => Effect.Effect<void, CanvasError>;
     readonly get: (target: CanvasTarget) => Effect.Effect<CanvasOpened, CanvasError>;
@@ -120,6 +126,7 @@ interface LiveCanvas {
   readonly stateRevision: number;
   readonly state: CanvasState;
   readonly revealId: string;
+  readonly functionsBlocked: boolean;
   readonly events: ReadonlyArray<CanvasEvent>;
   readonly eventTimes: ReadonlyArray<number>;
   readonly watcher: Fiber.Fiber<void>;
@@ -127,7 +134,8 @@ interface LiveCanvas {
 
 interface EventWaiter {
   readonly name: CanvasName | undefined;
-  readonly event: Deferred.Deferred<CanvasEvent>;
+  /** `None` when the canvas it names was closed. */
+  readonly event: Deferred.Deferred<Option.Option<CanvasEvent>>;
 }
 
 interface ThreadCanvases {
@@ -135,6 +143,8 @@ interface ThreadCanvases {
   readonly items: PubSub.PubSub<CanvasStreamItem>;
   readonly canvases: Map<CanvasName, LiveCanvas>;
   readonly waiters: Set<EventWaiter>;
+  /** Where each closed canvas's pages stopped, so one recreated under the name starts past it. */
+  readonly closedPageRevisions: Map<CanvasName, number>;
   restored: boolean;
 }
 
@@ -150,6 +160,7 @@ const toSnapshot = (live: LiveCanvas): CanvasSnapshot => ({
     kind: declaration.kind,
   })),
   revealId: live.revealId,
+  ...(live.functionsBlocked ? { functionsBlocked: true } : {}),
   ...(live.folder.manifestIssue === null ? {} : { manifestIssue: live.folder.manifestIssue }),
 });
 
@@ -184,6 +195,7 @@ const make = Effect.gen(function* () {
       items: yield* PubSub.unbounded<CanvasStreamItem>(),
       canvases: new Map(),
       waiters: new Set(),
+      closedPageRevisions: new Map(),
       restored: false,
     };
     const existing = threads.get(threadId);
@@ -196,6 +208,17 @@ const make = Effect.gen(function* () {
     Effect.suspend(() => {
       thread.canvases.set(live.folder.name, live);
       return PubSub.publish(thread.items, { _tag: "upsert", canvas: toSnapshot(live) });
+    });
+
+  // The one place state is written, so no write can drop the functions block.
+  const persist = (live: Omit<LiveCanvas, "watcher">) =>
+    store.writeState({
+      threadId: live.folder.threadId,
+      name: live.folder.name,
+      state: live.state,
+      stateRevision: live.stateRevision,
+      revealId: live.revealId,
+      functionsBlocked: live.functionsBlocked,
     });
 
   // Path, size and modification time of every file. A new watcher can replay the folder's
@@ -265,6 +288,7 @@ const make = Effect.gen(function* () {
         stateRevision: persisted?.stateRevision ?? 0,
         state: persisted?.state ?? {},
         revealId,
+        functionsBlocked: persisted?.functionsBlocked === true,
         events: [],
         eventTimes: [],
         watcher: yield* watch(thread, folder),
@@ -297,7 +321,10 @@ const make = Effect.gen(function* () {
   // Runs under the thread's lock, inside the span of the operation that took it.
   const openLocked = Effect.fnUntraced(function* (
     thread: ThreadCanvases,
-    input: Parameters<CanvasService["Service"]["open"]>[0],
+    input: Parameters<CanvasService["Service"]["open"]>[0] & {
+      /** Decides the block for a new canvas. An open one keeps what it has when this is absent. */
+      readonly functionsBlocked?: boolean;
+    },
   ) {
     const target = { threadId: input.threadId, name: input.name };
     const existing = thread.canvases.get(input.name);
@@ -312,20 +339,23 @@ const make = Effect.gen(function* () {
       input.state === undefined
         ? { state: stored.state, stateRevision: stored.stateRevision }
         : { state: input.state, stateRevision: stored.stateRevision + 1 };
-    const revealId = yield* nextId;
-    const fingerprint =
-      existing === undefined ? yield* fingerprintOf(folder.path) : existing.fingerprint;
+    const next = {
+      folder,
+      openTitle: input.title ?? existing?.openTitle,
+      fingerprint:
+        existing === undefined ? yield* fingerprintOf(folder.path) : existing.fingerprint,
+      pageRevision:
+        existing?.pageRevision ?? (thread.closedPageRevisions.get(input.name) ?? -1) + 1,
+      ...persisted,
+      revealId: yield* nextId,
+      functionsBlocked: input.functionsBlocked ?? stored.functionsBlocked === true,
+      events: existing?.events ?? [],
+      eventTimes: existing?.eventTimes ?? [],
+    };
     return yield* Effect.gen(function* () {
-      yield* store.writeState({ ...target, ...persisted, revealId });
+      yield* persist(next);
       const live: LiveCanvas = {
-        folder,
-        openTitle: input.title ?? existing?.openTitle,
-        fingerprint,
-        pageRevision: existing?.pageRevision ?? 0,
-        ...persisted,
-        revealId,
-        events: existing?.events ?? [],
-        eventTimes: existing?.eventTimes ?? [],
+        ...next,
         watcher: existing?.watcher ?? (yield* watch(thread, target)),
       };
       yield* put(thread, live);
@@ -342,16 +372,21 @@ const make = Effect.gen(function* () {
       // Copying under the lock keeps a restore or an open from watching the half-copied folder.
       return yield* withThread(input.threadId, (thread) =>
         Effect.gen(function* () {
-          yield* hasRoomFor(thread, input.as ?? input.name);
+          const name = input.as ?? input.name;
+          yield* hasRoomFor(thread, name);
+          if (input.state !== undefined) yield* checkStateSize(name, input.state);
           const folder = yield* library.instantiate({
             threadId: input.threadId,
             from: { scope: input.scope, name: input.name },
             as: input.as,
           });
           const target = { threadId: input.threadId, name: folder.name };
-          return yield* openLocked(thread, { ...target, state: {} }).pipe(
-            Effect.onError(() => Effect.ignore(store.remove(target))),
-          );
+          return yield* openLocked(thread, {
+            ...target,
+            ...(input.title === undefined ? {} : { title: input.title }),
+            state: input.state ?? {},
+            functionsBlocked: input.scope === "project",
+          }).pipe(Effect.onError(() => Effect.ignore(store.remove(target))));
         }),
       );
     },
@@ -365,6 +400,13 @@ const make = Effect.gen(function* () {
           yield* store.remove(target);
           yield* Fiber.interrupt(live.watcher);
           thread.canvases.delete(target.name);
+          thread.closedPageRevisions.set(target.name, live.pageRevision);
+          // Left waiting, it would take the first event of a canvas recreated under this name.
+          for (const waiter of thread.waiters) {
+            if (waiter.name !== target.name) continue;
+            thread.waiters.delete(waiter);
+            Deferred.doneUnsafe(waiter.event, Effect.succeedNone);
+          }
           yield* PubSub.publish(thread.items, {
             _tag: "removed",
             threadId: target.threadId,
@@ -388,20 +430,26 @@ const make = Effect.gen(function* () {
           const state = applyCanvasStatePatch(live.state, input.patch);
           yield* checkStateSize(input.name, state);
           const next = { ...live, state, stateRevision: live.stateRevision + 1 };
-          yield* store
-            .writeState({
-              threadId: input.threadId,
-              name: input.name,
-              state,
-              stateRevision: next.stateRevision,
-              revealId: next.revealId,
-            })
-            .pipe(Effect.andThen(put(thread, next)), Effect.uninterruptible);
+          yield* persist(next).pipe(Effect.andThen(put(thread, next)), Effect.uninterruptible);
           return toSnapshot(next);
         }),
       );
     },
   );
+
+  const trustFunctions: CanvasService["Service"]["trustFunctions"] = Effect.fn(
+    "CanvasService.trustFunctions",
+  )(function* (target) {
+    return yield* withThread(target.threadId, (thread) =>
+      Effect.gen(function* () {
+        const live = yield* requireLive(thread, target);
+        if (!live.functionsBlocked) return toSnapshot(live);
+        const next = { ...live, functionsBlocked: false };
+        yield* persist(next).pipe(Effect.andThen(put(thread, next)), Effect.uninterruptible);
+        return toSnapshot(next);
+      }),
+    );
+  });
 
   const stream: CanvasService["Service"]["stream"] = (threadId) =>
     Stream.unwrap(
@@ -459,7 +507,7 @@ const make = Effect.gen(function* () {
         for (const waiter of thread.waiters) {
           if (waiter.name !== undefined && waiter.name !== input.name) continue;
           thread.waiters.delete(waiter);
-          Deferred.doneUnsafe(waiter.event, Effect.succeed(event));
+          Deferred.doneUnsafe(waiter.event, Effect.succeedSome(event));
           return { event, delivery: "waiter" as const };
         }
         return { event, delivery: "thread" as const };
@@ -485,7 +533,7 @@ const make = Effect.gen(function* () {
           }
           const waiter: EventWaiter = {
             name: input.name,
-            event: yield* Deferred.make<CanvasEvent>(),
+            event: yield* Deferred.make<Option.Option<CanvasEvent>>(),
           };
           thread.waiters.add(waiter);
           return { thread, waiter };
@@ -494,10 +542,11 @@ const make = Effect.gen(function* () {
       ({ thread, waiter }) =>
         Deferred.await(waiter.event).pipe(
           Effect.timeoutOption(input.timeout),
-          // A timeout that finds its waiter already taken lost the race to an event.
+          Effect.map(Option.flatten),
+          // A timeout that finds its waiter already taken lost the race to an event or a close.
           Effect.filterOrElse(
             (event) => Option.isSome(event) || thread.waiters.delete(waiter),
-            () => Effect.asSome(Deferred.await(waiter.event)),
+            () => Deferred.await(waiter.event),
           ),
         ),
       ({ thread, waiter }, exit) =>
@@ -505,8 +554,15 @@ const make = Effect.gen(function* () {
           ? Effect.void
           : // The event was handed over while this wait was being interrupted.
             Deferred.await(waiter.event).pipe(
-              Effect.flatMap((event) =>
-                port.deliver({ threadId: input.threadId, text: formatCanvasEventMessage(event) }),
+              Effect.flatMap(
+                Option.match({
+                  onNone: () => Effect.void,
+                  onSome: (event) =>
+                    port.deliver({
+                      threadId: input.threadId,
+                      text: formatCanvasEventMessage(event),
+                    }),
+                }),
               ),
               Effect.ignoreCause({ log: true }),
             ),
@@ -526,6 +582,7 @@ const make = Effect.gen(function* () {
     close,
     get,
     patchState,
+    trustFunctions,
     stream,
     submitEvent,
     waitForEvent,

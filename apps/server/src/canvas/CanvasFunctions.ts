@@ -20,16 +20,21 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import * as CanvasService from "./CanvasService.ts";
 import * as CanvasStore from "./CanvasStore.ts";
 import * as CanvasThreadPort from "./CanvasThreadPort.ts";
 
-/** Runs the functions a canvas declares in `canvas.json`. Nothing undeclared ever runs. */
+/**
+ * Runs the functions a canvas declares in `canvas.json`. Nothing undeclared ever runs, and nothing
+ * at all while the canvas's functions are blocked.
+ */
 export class CanvasFunctions extends Context.Service<
   CanvasFunctions,
   {
     /**
      * Resolves with the function's stdout, parsed as JSON when it parses and returned as a string
-     * otherwise. A `change` function fails with `function-needs-gesture` unless `gesture` is true.
+     * otherwise. A `change` function fails with `function-needs-gesture` unless `gesture` is true,
+     * and every function fails with `functions-blocked` until the user trusts the canvas.
      */
     readonly call: (
       input: CanvasStore.CanvasTarget & {
@@ -70,13 +75,19 @@ const runFunction = Effect.fn("CanvasFunctions.runFunction")(function* (
 
   const [command, ...args] = input.declaration.command;
   const resolved = yield* resolveSpawnCommand(command, args, { env: input.env, extendEnv: true });
+  // The resolver can run a Windows batch file only through cmd.exe, and a function gets no shell.
+  if (resolved.shell) {
+    return yield* failed(
+      "Batch files (.cmd and .bat) are not supported: a function runs without a shell.",
+    );
+  }
   const child = yield* spawner
     .spawn(
       ChildProcess.make(resolved.command, resolved.args, {
         cwd: input.cwd,
         env: input.env,
         extendEnv: true,
-        shell: resolved.shell,
+        shell: false,
         forceKillAfter: FORCE_KILL_AFTER,
       }),
     )
@@ -128,13 +139,20 @@ const runFunction = Effect.fn("CanvasFunctions.runFunction")(function* (
 
 const make = Effect.gen(function* () {
   const store = yield* CanvasStore.CanvasStore;
+  const canvases = yield* CanvasService.CanvasService;
   const threads = yield* CanvasThreadPort.CanvasThreadPort;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const running = new Map<string, number>();
 
   const call: CanvasFunctions["Service"]["call"] = Effect.fn("CanvasFunctions.call")(
     function* (input) {
-      const folder = yield* store.get({ threadId: input.threadId, name: input.name });
+      const target = { threadId: input.threadId, name: input.name };
+      const folder = yield* store.get(target);
+      // Asked after the manifest is read: a canvas replaced in between is then seen as blocked.
+      const { snapshot } = yield* canvases.get(target);
+      if (snapshot.functionsBlocked === true) {
+        return yield* new CanvasError({ reason: "functions-blocked", canvas: input.name });
+      }
       const functions = folder.manifest?.functions ?? {};
       const declaration = Object.hasOwn(functions, input.function)
         ? functions[input.function]

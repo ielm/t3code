@@ -11,6 +11,8 @@ import {
   type CanvasManifest,
   ThreadId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { CommandResolutionCache, SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -20,8 +22,10 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as CanvasFunctions from "./CanvasFunctions.ts";
+import * as CanvasService from "./CanvasService.ts";
 import * as CanvasStore from "./CanvasStore.ts";
 import * as CanvasThreadPort from "./CanvasThreadPort.ts";
 
@@ -115,6 +119,7 @@ const harness = Effect.fn("harness")(function* (options?: { readonly manifest?: 
       },
       hold: { command: [node, holdScript, socketPath], kind: "read" },
       slow: { command: [node, holdScript, socketPath], kind: "read", timeoutSeconds: 1 },
+      batch: { command: ["build", "--fast"], kind: "read" },
     },
   };
   const folder = (target: CanvasStore.CanvasTarget): CanvasStore.CanvasFolder => ({
@@ -124,12 +129,43 @@ const harness = Effect.fn("harness")(function* (options?: { readonly manifest?: 
     manifestIssue: options?.manifest === null ? "canvas.json is missing." : null,
   });
 
+  const known = (target: CanvasStore.CanvasTarget) =>
+    target.name === name || target.name === "other" || target.name === "from-project";
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  let spawned = 0;
   const dependencies = Layer.mergeAll(
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) =>
+        Effect.suspend(() => {
+          spawned += 1;
+          return spawner.spawn(command);
+        }),
+      ),
+    ),
+    Layer.mock(CanvasService.CanvasService)({
+      get: (target) =>
+        known(target)
+          ? Effect.succeed({
+              snapshot: {
+                ...target,
+                title: "Board",
+                pageRevision: 0,
+                stateRevision: 0,
+                state: {},
+                functions: [],
+                revealId: "reveal-1",
+                ...(target.name === "from-project" ? { functionsBlocked: true } : {}),
+              },
+              path: canvasDir,
+            })
+          : Effect.fail(new CanvasError({ reason: "not-found", canvas: target.name })),
+    }),
     Layer.succeed(
       CanvasStore.CanvasStore,
       CanvasStore.CanvasStore.of({
         get: (target) =>
-          target.name === name || target.name === "other"
+          known(target)
             ? Effect.succeed(folder(target))
             : Effect.fail(new CanvasError({ reason: "not-found", canvas: target.name })),
         ensure: unused,
@@ -157,6 +193,7 @@ const harness = Effect.fn("harness")(function* (options?: { readonly manifest?: 
     canvasDir,
     workspace,
     held: yield* holdServer(socketPath),
+    spawned: () => spawned,
     call: (
       fn: string,
       input?: { readonly args?: unknown; readonly gesture?: boolean; readonly name?: string },
@@ -219,6 +256,38 @@ describe("CanvasFunctions", () => {
 
         expect((yield* failure(call("save", { args: 1 }))).reason).toBe("function-needs-gesture");
         expect(yield* call("save", { args: 1, gesture: true })).toMatchObject({ args: 1 });
+      }),
+    ),
+  );
+
+  it.live("runs nothing for a canvas whose functions are blocked", () =>
+    live(
+      Effect.gen(function* () {
+        const { call, spawned } = yield* harness();
+        const blocked = { name: "from-project", gesture: true };
+
+        expect((yield* failure(call("report", blocked))).reason).toBe("functions-blocked");
+        expect((yield* failure(call("save", blocked))).reason).toBe("functions-blocked");
+        expect(spawned()).toBe(0);
+      }),
+    ),
+  );
+
+  it.live("refuses a Windows batch file, which only a shell can run", () =>
+    live(
+      Effect.gen(function* () {
+        const { call, spawned } = yield* harness();
+
+        const refused = yield* failure(call("batch")).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(CommandResolutionCache, new Map()),
+          Effect.provideService(SpawnExecutableResolution, () => "C:\\tools\\build.cmd"),
+        );
+        expect(refused).toMatchObject({
+          reason: "function-failed",
+          detail: "Batch files (.cmd and .bat) are not supported: a function runs without a shell.",
+        });
+        expect(spawned()).toBe(0);
       }),
     ),
   );

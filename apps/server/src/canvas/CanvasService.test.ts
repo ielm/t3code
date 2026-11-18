@@ -93,12 +93,13 @@ const makeHarness = Effect.gen(function* () {
     changes: (target) => Stream.unwrap(Effect.map(changesOf(target), Stream.fromQueue)),
     resolveFile: (input) => Effect.succeed(path.join(folderPath(input), input.path)),
     readState: (target) => Effect.sync(() => states.get(keyOf(target)) ?? null),
-    writeState: ({ state, stateRevision, revealId, ...target }) =>
+    writeState: ({ state, stateRevision, revealId, functionsBlocked, ...target }) =>
       Effect.sync(() => {
         states.set(keyOf(target), {
           state,
           stateRevision,
           ...(revealId === undefined ? {} : { revealId }),
+          ...(functionsBlocked === true ? { functionsBlocked } : {}),
         });
       }),
     remove: Effect.fnUntraced(function* (target) {
@@ -169,6 +170,8 @@ const makeHarness = Effect.gen(function* () {
 
   const saveToProjectLibrary = (name: string, files: Record<string, string>) =>
     writeFiles(path.join(workspace, ".canvases", name), files);
+  const saveToPersonalLibrary = (name: string, files: Record<string, string>) =>
+    writeFiles(path.join(root, "home", "canvases", name), files);
 
   return {
     layer,
@@ -182,6 +185,7 @@ const makeHarness = Effect.gen(function* () {
     writeFile,
     writeManifest,
     saveToProjectLibrary,
+    saveToPersonalLibrary,
   };
 }).pipe(Effect.provide(NodeServices.layer));
 
@@ -469,8 +473,36 @@ it.effect("opens a saved canvas as a new thread canvas with fresh state and show
         canvas: { name: "sprint", title: "Sprint", pageRevision: 1 },
       });
 
-      const sameName = yield* canvases.openFrom({ threadId, scope: "project", name: "burndown" });
-      expect(sameName.snapshot.name).toBe("burndown");
+      const sameName = yield* canvases.openFrom({
+        threadId,
+        scope: "project",
+        name: "burndown",
+        title: "Burndown",
+        state: { sprint: 12 },
+      });
+      expect(sameName.snapshot).toMatchObject({
+        name: "burndown",
+        title: "Burndown",
+        state: { sprint: 12 },
+        stateRevision: 1,
+      });
+      // One reveal: the next item is already the following write.
+      expect(yield* Queue.take(items)).toEqual({ _tag: "upsert", canvas: sameName.snapshot });
+      const patched = yield* canvases.patchState({ ...sameName.snapshot, patch: { sprint: 13 } });
+      expect(yield* Queue.take(items)).toEqual({ _tag: "upsert", canvas: patched });
+
+      expect(
+        yield* canvases
+          .openFrom({
+            threadId,
+            scope: "project",
+            name: "burndown",
+            as: "huge",
+            state: { blob: "x".repeat(CANVAS_STATE_MAX_BYTES) },
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "CanvasError", reason: "state-too-large" });
+      expect(harness.folders.has(keyOf({ threadId, name: "huge" }))).toBe(false);
     }).pipe(Effect.provide(harness.layer));
   }),
 );
@@ -513,6 +545,115 @@ it.effect("opening a saved canvas never replaces one, and a failed open leaves n
 
       yield* canvases.close(board);
       expect(yield* Queue.take(items)).toEqual({ _tag: "removed", threadId, name: "board" });
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect(
+  "blocks the functions of a canvas from the project library until the user trusts it",
+  () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* harness.saveToProjectLibrary("deploys", { "index.html": "<p>deploys</p>" });
+      yield* harness.saveToPersonalLibrary("mine", { "index.html": "<p>mine</p>" });
+      const deploys = { threadId, name: "deploys" };
+      const persisted = () => harness.states.get(keyOf(deploys));
+
+      yield* Effect.gen(function* () {
+        const canvases = yield* CanvasService.CanvasService;
+        const items = yield* follow(threadId);
+        yield* Queue.take(items);
+
+        const opened = yield* canvases.openFrom({ threadId, scope: "project", name: "deploys" });
+        expect(opened.snapshot.functionsBlocked).toBe(true);
+        expect(yield* Queue.take(items)).toEqual({ _tag: "upsert", canvas: opened.snapshot });
+        expect(persisted()).toMatchObject({ functionsBlocked: true });
+
+        // Neither a state write, which the page can make, nor the agent reopening it lifts the block.
+        const patched = yield* canvases.patchState({ ...deploys, patch: { region: "eu" } });
+        expect(patched.functionsBlocked).toBe(true);
+        expect(persisted()).toMatchObject({ functionsBlocked: true });
+        const reopened = yield* canvases.open({ ...deploys, title: "Deploys", state: {} });
+        expect(reopened.snapshot.functionsBlocked).toBe(true);
+        expect(persisted()).toMatchObject({ functionsBlocked: true });
+
+        const personal = yield* canvases.openFrom({ threadId, scope: "personal", name: "mine" });
+        expect(personal.snapshot).not.toHaveProperty("functionsBlocked");
+        expect((yield* canvases.open(board)).snapshot).not.toHaveProperty("functionsBlocked");
+        expect(harness.states.get(keyOf(board))).not.toHaveProperty("functionsBlocked");
+      }).pipe(Effect.provide(harness.layer));
+
+      // A restart.
+      yield* Effect.gen(function* () {
+        const canvases = yield* CanvasService.CanvasService;
+        const items = yield* follow(threadId);
+        expect(yield* Queue.take(items)).toMatchObject({
+          _tag: "snapshot",
+          canvases: [
+            { name: "deploys", functionsBlocked: true },
+            { name: "mine" },
+            { name: "board" },
+          ],
+        });
+
+        const trusted = yield* canvases.trustFunctions(deploys);
+        expect(trusted).toMatchObject({ name: "deploys", stateRevision: 3 });
+        expect(trusted).not.toHaveProperty("functionsBlocked");
+        expect(yield* Queue.take(items)).toEqual({ _tag: "upsert", canvas: trusted });
+        expect(persisted()).toEqual({
+          state: {},
+          stateRevision: 3,
+          revealId: trusted.revealId,
+        });
+        expect((yield* canvases.get(deploys)).snapshot).toEqual(trusted);
+
+        expect(yield* canvases.trustFunctions(deploys)).toEqual(trusted);
+        expect(yield* reasonOf(canvases.trustFunctions({ threadId, name: "absent" }))).toBe(
+          "not-found",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect("closing a canvas ends its waits, and one recreated under its name starts apart", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* Effect.gen(function* () {
+      const canvases = yield* CanvasService.CanvasService;
+      const closed = yield* canvases.open(board);
+      const boardWait = yield* canvases
+        .waitForEvent({ threadId, name: "board", timeout: Duration.minutes(1) })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* canvases.close(board);
+      const recreated = yield* canvases.open(board);
+      expect(recreated.snapshot.pageRevision).toBeGreaterThan(closed.snapshot.pageRevision);
+      // The closed canvas's page may still be open somewhere.
+      expect(
+        yield* reasonOf(
+          canvases.submitEvent({
+            ...board,
+            event: "from-the-closed-page",
+            pageRevision: closed.snapshot.pageRevision,
+          }),
+        ),
+      ).toBe("stale-page");
+
+      expect((yield* click(board, "save")).delivery).toBe("thread");
+      expect(harness.delivered).toEqual(["[canvas board] save"]);
+      // No clock has moved: the wait ended with the close, not with its timeout.
+      expect(Option.isNone(yield* Fiber.join(boardWait))).toBe(true);
+
+      // A wait on any canvas is the thread's, so it outlives one canvas.
+      const anyWait = yield* canvases
+        .waitForEvent({ threadId, timeout: Duration.minutes(1) })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* canvases.close(board);
+      const again = yield* canvases.open(board);
+      expect(again.snapshot.pageRevision).toBeGreaterThan(recreated.snapshot.pageRevision);
+      expect((yield* click(board, "archive")).delivery).toBe("waiter");
+      expect(Option.getOrThrow(yield* Fiber.join(anyWait))).toMatchObject({ event: "archive" });
+      expect(harness.delivered).toHaveLength(1);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

@@ -16,6 +16,7 @@ import * as CanvasService from "../../../canvas/CanvasService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
+  CANVAS_FUNCTIONS_BLOCKED_NOTE,
   CANVAS_WAIT_DEFAULT_SECONDS,
   CANVAS_WAIT_MAX_SECONDS,
   CanvasReadToolkit,
@@ -120,27 +121,27 @@ const standardHandlers = {
     Effect.gen(function* () {
       const threadId = yield* callerThreadId("canvas_open");
       const canvases = yield* CanvasService.CanvasService;
-      if (from !== undefined) {
-        yield* canvases
-          .openFrom({ threadId, scope: from.scope, name: from.name, as: input.name })
-          .pipe(
-            Effect.mapError((error) =>
-              error._tag === "CanvasError" && error.reason === "not-found"
-                ? invalidRequest(
-                    `The ${from.scope} library has no canvas named ${from.name}. \`canvas_read\` lists the saved ones.`,
-                  )
-                : toFailure(error),
-            ),
-          );
-      }
-      const { snapshot, path } = yield* canvases
-        .open({ ...input, threadId })
-        .pipe(Effect.mapError(toFailure));
+      const { snapshot, path } = yield* from === undefined
+        ? canvases.open({ ...input, threadId }).pipe(Effect.mapError(toFailure))
+        : canvases
+            .openFrom({ ...input, threadId, scope: from.scope, name: from.name, as: input.name })
+            .pipe(
+              Effect.mapError((error) =>
+                error._tag === "CanvasError" && error.reason === "not-found"
+                  ? invalidRequest(
+                      `The ${from.scope} library has no canvas named ${from.name}. \`canvas_read\` lists the saved ones.`,
+                    )
+                  : toFailure(error),
+              ),
+            );
       return {
         name: snapshot.name,
         path,
         pageRevision: snapshot.pageRevision,
         stateRevision: snapshot.stateRevision,
+        ...(snapshot.functionsBlocked === true
+          ? { functionsBlocked: CANVAS_FUNCTIONS_BLOCKED_NOTE }
+          : {}),
       };
     }),
   ),

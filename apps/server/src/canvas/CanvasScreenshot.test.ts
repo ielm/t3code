@@ -151,6 +151,7 @@ const setup = Effect.fn("setup")(function* (
       get: (target) =>
         target.name === name ? Effect.succeed({ snapshot, path: canvasDir }) : Effect.fail(missing),
       patchState: unused,
+      trustFunctions: unused,
       stream: () => Stream.die("unused by CanvasScreenshot"),
       submitEvent: unused,
       waitForEvent: unused,
@@ -186,6 +187,10 @@ describe("CanvasScreenshot", () => {
     expect(harness).not.toContain("/tmp/shot.png");
     expect(harness).toContain(`html{height:${CanvasScreenshot.CANVAS_SCREENSHOT_HEIGHT}px;`);
     expect(harness).toContain('<iframe id="canvas" sandbox="allow-scripts"');
+    // The frame's first document is `srcdoc`, which no fetch loads; any navigation after it is one.
+    const framePolicy = `<meta http-equiv="Content-Security-Policy" content="frame-src 'none'">`;
+    expect(harness).toContain(framePolicy);
+    expect(harness.indexOf(framePolicy)).toBeLessThan(harness.indexOf("<iframe"));
 
     const { script, encodedConfig, config } = readHarness(harness);
     expect(config.init).toEqual(CanvasScreenshot.canvasInitMessage(snapshot));
@@ -231,6 +236,9 @@ describe("CanvasScreenshot", () => {
     send(frame.contentWindow, null);
     expect(posted).toEqual([]);
 
+    send(frame.contentWindow, { t3canvas: 1, type: "ready" });
+    expect(posted).toEqual([config.init, config.theme]);
+    // The window outlives its document, so a second `ready` may come from a page navigated to.
     send(frame.contentWindow, { t3canvas: 1, type: "ready" });
     expect(posted).toEqual([config.init, config.theme]);
 
@@ -296,7 +304,7 @@ describe("CanvasScreenshot", () => {
       // The panel's policy, with the folder's files now arriving as data URLs.
       const policy = /<meta http-equiv="Content-Security-Policy" content="([^"]*)">/.exec(page);
       expect(policy?.[1]).toBe(
-        "default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline' data:; img-src data: blob: data:; font-src data: data:; media-src data: blob: data:; connect-src data:; worker-src blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+        "default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline' data:; img-src data: blob: data:; font-src data: data:; media-src data: blob: data:; connect-src data:; worker-src blob:; frame-src 'none'; webrtc 'block'; object-src 'none'; base-uri 'none'; form-action 'none'",
       );
       expect(policy?.index).toBeLessThan(page.indexOf('<style id="t3-theme">'));
       expect(policy?.index).toBeLessThan(page.indexOf("<script"));

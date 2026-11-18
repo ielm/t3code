@@ -24,6 +24,9 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 export const CANVAS_WAIT_DEFAULT_SECONDS = 30;
 // Other providers' MCP clients give up on a call near 60 seconds.
 export const CANVAS_WAIT_MAX_SECONDS = 45;
+// No tool lifts the block: the commands came with the repository, so the decision is the user's.
+export const CANVAS_FUNCTIONS_BLOCKED_NOTE =
+  "Only the user can enable this canvas's functions, in its panel.";
 
 const shared = {
   failure: OrchestratorMcpFailure,
@@ -99,6 +102,11 @@ const CanvasOpenTool = Tool.make("canvas_open", {
     path: Schema.String,
     pageRevision: NonNegativeInt,
     stateRevision: NonNegativeInt,
+    functionsBlocked: Schema.optionalKey(
+      Schema.String.annotate({
+        description: "Present while `canvas.call` is off for a canvas from the project library.",
+      }),
+    ),
   }),
 })
   .annotate(Tool.Title, "Open canvas")

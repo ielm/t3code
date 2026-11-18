@@ -74,15 +74,17 @@ export function canvasInitMessage(snapshot: CanvasSnapshot): CanvasHostMessage {
   };
 }
 
-// Plays the panel for one page load: answers `ready` with `init` and the theme, and repeats the
-// page's reported errors on the console the capture records.
+// Plays the panel for one page load: answers the first `ready` with `init` and the theme, and
+// repeats the page's reported errors on the console the capture records. Only the first, because
+// the frame's window outlives its document and a later `ready` may not be the canvas's.
 const HOST_SCRIPT = `(function(){
 var config=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(document.getElementById("t3-canvas-host").getAttribute("data-config")),function(c){return c.charCodeAt(0);})));
 var frame=document.getElementById("canvas");
+var answered=false;
 window.addEventListener("message",function(event){
 var data=event.data;
 if(event.source!==frame.contentWindow||!data||data.t3canvas!==config.init.t3canvas)return;
-if(data.type==="ready"){frame.contentWindow.postMessage(config.init,"*");frame.contentWindow.postMessage(config.theme,"*");}
+if(data.type==="ready"){if(answered)return;answered=true;frame.contentWindow.postMessage(config.init,"*");frame.contentWindow.postMessage(config.theme,"*");}
 else if(data.type==="log"){if(data.level==="warning")console.warn(String(data.text));else console.error(String(data.text));}
 });
 frame.srcdoc=config.document;
@@ -114,6 +116,9 @@ export function canvasScreenshotHarness(input: {
   ).toString("base64");
   return [
     '<!doctype html><html><head><meta charset="utf-8">',
+    // A parent's `frame-src` governs every navigation of its frames. `srcdoc` is not a fetch, so
+    // the canvas document still loads, and nothing it navigates to does.
+    `<meta http-equiv="Content-Security-Policy" content="frame-src 'none'">`,
     `<style>html{height:${CANVAS_SCREENSHOT_HEIGHT}px;padding:0;overflow:hidden}body{height:100%}iframe{display:block;border:0;width:100%;height:100%;color-scheme:${input.appearance}}</style>`,
     "</head><body>",
     '<iframe id="canvas" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>',

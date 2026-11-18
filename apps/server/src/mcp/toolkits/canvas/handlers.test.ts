@@ -97,7 +97,10 @@ const setup = (invocation: McpInvocationContext.McpInvocationScope = scope) => {
     Layer.mock(CanvasService.CanvasService)({
       open: (input) =>
         called("open", input, {
-          snapshot: snapshotOf(input.name, 5),
+          snapshot: {
+            ...snapshotOf(input.name, 5),
+            ...(input.name === "from-repo" ? { functionsBlocked: true } : {}),
+          },
           path: `/state/canvas/${input.name}`,
         }),
       openFrom: (input) =>
@@ -106,7 +109,10 @@ const setup = (invocation: McpInvocationContext.McpInvocationScope = scope) => {
               new CanvasLibrary.CanvasAlreadyExistsError({ scope: "thread", canvas: input.as }),
             )
           : called("openFrom", input, {
-              snapshot: snapshotOf(input.as ?? input.name, 0),
+              snapshot: {
+                ...snapshotOf(input.as ?? input.name, 1),
+                ...(input.scope === "project" ? { functionsBlocked: true } : {}),
+              },
               path: `/state/canvas/${input.as ?? input.name}`,
             }),
       patchState: (input) => called("patchState", input, snapshotOf(input.name, 6)),
@@ -215,44 +221,74 @@ it.effect("opens, patches and closes the calling thread's canvas through the ser
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("creates a canvas from a saved one before opening it", () => {
-  const { calls, layer } = setup();
-  return Effect.gen(function* () {
-    const toolkit = yield* CanvasToolkit;
-    const from = { scope: "project" as const, name: "review" };
+it.effect(
+  "creates a canvas from a saved one in one call, and says when its functions are off",
+  () => {
+    const { calls, layer } = setup();
+    return Effect.gen(function* () {
+      const toolkit = yield* CanvasToolkit;
+      const from = { scope: "project" as const, name: "review" };
+      const opened = { path: "/state/canvas/pr-12", pageRevision: 3, stateRevision: 1 };
+      const functionsBlocked = "Only the user can enable this canvas's functions, in its panel.";
 
-    expect(
-      yield* resultOf(toolkit.handle("canvas_open", { name: "pr-12", title: "PR 12", from })),
-    ).toEqual({ name: "pr-12", path: "/state/canvas/pr-12", pageRevision: 3, stateRevision: 5 });
-    expect(calls).toEqual([
-      ["openFrom", { threadId, scope: "project", name: "review", as: "pr-12" }],
-      ["open", { threadId, name: "pr-12", title: "PR 12" }],
-    ]);
+      expect(
+        yield* resultOf(
+          toolkit.handle("canvas_open", { name: "pr-12", title: "PR 12", state: { pr: 12 }, from }),
+        ),
+      ).toEqual({ name: "pr-12", ...opened, functionsBlocked });
+      expect(
+        yield* resultOf(
+          toolkit.handle("canvas_open", {
+            name: "pr-12",
+            from: { scope: "personal", name: "kit" },
+          }),
+        ),
+      ).toEqual({ name: "pr-12", ...opened });
+      expect(calls).toEqual([
+        [
+          "openFrom",
+          {
+            threadId,
+            scope: "project",
+            name: "review",
+            as: "pr-12",
+            title: "PR 12",
+            state: { pr: 12 },
+          },
+        ],
+        ["openFrom", { threadId, scope: "personal", name: "kit", as: "pr-12" }],
+      ]);
+      // Reopening it does not lift the block, and the result keeps saying so.
+      expect(yield* resultOf(toolkit.handle("canvas_open", { name: "from-repo" }))).toMatchObject({
+        name: "from-repo",
+        functionsBlocked,
+      });
 
-    calls.length = 0;
-    expect(yield* resultOf(toolkit.handle("canvas_open", { name: "open", from }))).toEqual(
-      expect.objectContaining({
-        code: "invalid_request",
-        message: "This thread already has a canvas with that name. Omit `from` to reopen it.",
-      }),
-    );
-    expect(
-      yield* resultOf(
-        toolkit.handle("canvas_open", {
-          name: "plan",
-          from: { scope: "personal", name: "missing" },
+      calls.length = 0;
+      expect(yield* resultOf(toolkit.handle("canvas_open", { name: "open", from }))).toEqual(
+        expect.objectContaining({
+          code: "invalid_request",
+          message: "This thread already has a canvas with that name. Omit `from` to reopen it.",
         }),
-      ),
-    ).toEqual(
-      expect.objectContaining({
-        code: "invalid_request",
-        message:
-          "The personal library has no canvas named missing. `canvas_read` lists the saved ones.",
-      }),
-    );
-    expect(calls.filter(([method]) => method === "open")).toEqual([]);
-  }).pipe(Effect.provide(layer));
-});
+      );
+      expect(
+        yield* resultOf(
+          toolkit.handle("canvas_open", {
+            name: "plan",
+            from: { scope: "personal", name: "missing" },
+          }),
+        ),
+      ).toEqual(
+        expect.objectContaining({
+          code: "invalid_request",
+          message:
+            "The personal library has no canvas named missing. `canvas_read` lists the saved ones.",
+        }),
+      );
+      expect(calls.filter(([method]) => method === "open")).toEqual([]);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 it.effect("reads one canvas, and without a name lists the open and the saved ones", () => {
   const { layer } = setup();

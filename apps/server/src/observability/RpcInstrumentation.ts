@@ -198,6 +198,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.canvasSendEvent]: "canvas",
   [WS_METHODS.canvasCall]: "canvas",
   [WS_METHODS.canvasLog]: "canvas",
+  [WS_METHODS.canvasTrustFunctions]: "canvas",
   [WS_METHODS.canvasLibraryList]: "canvas",
   [WS_METHODS.canvasLibrarySave]: "canvas",
   [WS_METHODS.canvasLibraryOpen]: "canvas",

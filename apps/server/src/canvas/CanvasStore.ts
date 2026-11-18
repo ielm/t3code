@@ -43,6 +43,8 @@ export interface CanvasPersistedState {
   readonly stateRevision: number;
   /** Kept so a server restart does not look like a new request to show the canvas. */
   readonly revealId?: string | undefined;
+  /** Set on a canvas copied from the project library, until the user enables its functions. */
+  readonly functionsBlocked?: boolean | undefined;
 }
 
 /**
@@ -92,6 +94,7 @@ const PersistedStateJson = Schema.fromJsonString(
     state: CanvasState,
     stateRevision: NonNegativeInt,
     revealId: Schema.optional(Schema.String),
+    functionsBlocked: Schema.optional(Schema.Boolean),
   }),
 );
 const decodePersistedState = Schema.decodeUnknownEffect(PersistedStateJson);
@@ -162,8 +165,30 @@ const make = Effect.gen(function* () {
     );
   };
 
+  // lstat, not stat: a link is reported as a link and never followed.
+  const entryType = (target: string) =>
+    fs.lstat(target).pipe(
+      Effect.map((info) => Option.some(info.type)),
+      Effect.catchIf(isNotFound, () => Effect.succeedNone),
+    );
+
+  // The thread's directory is checked too: a link there would make every folder under it foreign.
+  const hasRealRoot = Effect.fnUntraced(function* (target: CanvasTarget) {
+    for (const directory of [threadDir(target.threadId), folderPath(target)]) {
+      const type = yield* entryType(directory);
+      if (Option.isNone(type) || type.value !== "Directory") return false;
+    }
+    return true;
+  });
+
   const loadManifest = Effect.fn("CanvasStore.loadManifest")(function* (target: CanvasTarget) {
-    const raw = yield* fs.readFileString(path.join(folderPath(target), CANVAS_MANIFEST_FILE)).pipe(
+    const manifestPath = path.join(folderPath(target), CANVAS_MANIFEST_FILE);
+    const type = yield* entryType(manifestPath).pipe(Effect.mapError(storageFailed(target.name)));
+    // A linked manifest would hand the function runner commands from outside the folder.
+    if (Option.isSome(type) && type.value !== "File") {
+      return { manifest: null, manifestIssue: `${CANVAS_MANIFEST_FILE} is not a regular file.` };
+    }
+    const raw = yield* fs.readFileString(manifestPath).pipe(
       Effect.asSome,
       Effect.catchIf(isNotFound, () => Effect.succeedNone),
       Effect.mapError(storageFailed(target.name)),
@@ -186,15 +211,13 @@ const make = Effect.gen(function* () {
   });
 
   const get: CanvasStore["Service"]["get"] = Effect.fn("CanvasStore.get")(function* (target) {
-    const folder = folderPath(target);
-    const info = yield* fs.stat(folder).pipe(Effect.mapError(notFoundOrStorageFailed(target.name)));
-    if (info.type !== "Directory") {
+    if (!(yield* hasRealRoot(target).pipe(Effect.mapError(storageFailed(target.name))))) {
       return yield* new CanvasError({ reason: "not-found", canvas: target.name });
     }
     return {
       threadId: target.threadId,
       name: target.name,
-      path: folder,
+      path: folderPath(target),
       ...(yield* loadManifest(target)),
     };
   });
@@ -209,14 +232,11 @@ const make = Effect.gen(function* () {
       .filter(isCanvasName)
       .filter((name) => !name.startsWith(ATOMIC_WRITE_TEMP_PREFIX))
       .toSorted();
-    const directories = yield* Effect.forEach(names, (name) =>
-      fs.stat(path.join(directory, name)).pipe(
-        Effect.map((info) => (info.type === "Directory" ? Option.some(name) : Option.none())),
-        Effect.catchIf(isNotFound, () => Effect.succeedNone),
-        Effect.mapError(storageFailed(name)),
-      ),
+    // The same test `get` applies, so a restore never lists a canvas it then cannot load.
+    const real = yield* Effect.forEach(names, (name) =>
+      hasRealRoot({ threadId, name }).pipe(Effect.mapError(storageFailed(name))),
     );
-    return directories.flatMap(Option.toArray);
+    return names.filter((_, index) => real[index]);
   });
 
   const writeIfAbsent = (filePath: string, contents: string) =>
@@ -230,8 +250,13 @@ const make = Effect.gen(function* () {
   const ensure: CanvasStore["Service"]["ensure"] = Effect.fn("CanvasStore.ensure")(
     function* (input) {
       const folder = folderPath(input);
-      const exists = yield* fs.exists(folder).pipe(Effect.mapError(storageFailed(input.name)));
-      if (!exists) {
+      const [thread, inPlace] = yield* Effect.all([
+        entryType(threadDir(input.threadId)),
+        entryType(folder),
+      ]).pipe(Effect.mapError(storageFailed(input.name)));
+      // Creating under a linked thread directory would write outside the state directory.
+      const linkedThread = Option.isSome(thread) && thread.value !== "Directory";
+      if (Option.isNone(inPlace) && !linkedThread) {
         const existing = yield* list(input.threadId);
         if (existing.length >= CANVAS_MAX_PER_THREAD) {
           return yield* new CanvasError({ reason: "too-many-canvases", canvas: input.name });
@@ -280,6 +305,10 @@ const make = Effect.gen(function* () {
       const requested = path.resolve(folder, input.path);
       if (requested === folder || !isWithin(folder, requested)) {
         return yield* invalidPath;
+      }
+      // Without this a linked folder's target would become the root every check below trusts.
+      if (!(yield* hasRealRoot(input).pipe(Effect.mapError(storageFailed(input.name))))) {
+        return yield* new CanvasError({ reason: "not-found", canvas: input.name });
       }
       const realFolder = yield* fs
         .realPath(folder)
@@ -335,6 +364,7 @@ const make = Effect.gen(function* () {
         state: input.state,
         stateRevision: input.stateRevision,
         ...(input.revealId === undefined ? {} : { revealId: input.revealId }),
+        ...(input.functionsBlocked === true ? { functionsBlocked: true } : {}),
       }).pipe(Effect.mapError(storageFailed(input.name)));
       yield* writeFileStringAtomically({ filePath: statePath(input), contents }).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),

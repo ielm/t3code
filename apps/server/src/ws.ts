@@ -2587,6 +2587,7 @@ export const layerWsRpc = (
         [WS_METHODS.canvasCall]: (input) =>
           canvasFunctions.call(input).pipe(Effect.map((value) => ({ value }))),
         [WS_METHODS.canvasLog]: (input) => canvasDiagnostics.record(input),
+        [WS_METHODS.canvasTrustFunctions]: (input) => canvasService.trustFunctions(input),
         [WS_METHODS.canvasLibraryList]: (input) =>
           canvasLibrary
             .list(input)

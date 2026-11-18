@@ -138,6 +138,9 @@ it.layer(layerTest)("CanvasStore", (it) => {
         state: { count: 2, nested: { a: [1] } },
         stateRevision: 2,
       });
+      const blocked = { state: {}, stateRevision: 3, revealId: "reveal-1", functionsBlocked: true };
+      yield* store.writeState({ ...target, ...blocked });
+      expect(yield* store.readState(target)).toEqual(blocked);
       expect(yield* fs.readDirectory(folder.path)).not.toContain("board.state.json");
       expect(yield* fs.exists(path.join(path.dirname(folder.path), "board.state.json"))).toBe(true);
       expect(yield* store.list(threadId)).toEqual(["board"]);
@@ -196,6 +199,62 @@ it.layer(layerTest)("CanvasStore", (it) => {
       expect(missing.reason).toBe("not-found");
 
       yield* store.remove(target);
+    }),
+  );
+
+  it.effect("refuses a canvas whose folder, thread directory or manifest is a link", () =>
+    Effect.gen(function* () {
+      const store = yield* CanvasStore.CanvasStore;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const linked = { threadId: ThreadId.make("linked"), name: CanvasName.make("board") };
+      const page = { ...linked, path: CanvasRelativePath.make("index.html") };
+      const reasonOf = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =>
+        effect.pipe(
+          Effect.flip,
+          Effect.map((error) => error.reason),
+        );
+      const outside = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3code-canvas-outside-" }),
+      );
+      const outsideCanvas = path.join(outside, "board");
+      yield* fs.makeDirectory(outsideCanvas);
+      yield* fs.writeFileString(path.join(outsideCanvas, "index.html"), "outside");
+      yield* fs.writeFileString(
+        path.join(outsideCanvas, "canvas.json"),
+        JSON.stringify({ title: "Outside", functions: { run: { command: ["ls"], kind: "read" } } }),
+      );
+
+      const folder = yield* store.ensure(linked);
+      const manifestPath = path.join(folder.path, "canvas.json");
+      yield* fs.remove(manifestPath);
+      yield* fs.symlink(path.join(outsideCanvas, "canvas.json"), manifestPath);
+      expect(yield* store.get(linked)).toEqual({
+        ...folder,
+        manifest: null,
+        manifestIssue: "canvas.json is not a regular file.",
+      });
+
+      yield* fs.remove(folder.path, { recursive: true });
+      yield* fs.symlink(outsideCanvas, folder.path);
+      expect(yield* reasonOf(store.get(linked))).toBe("not-found");
+      expect(yield* reasonOf(store.resolveFile(page))).toBe("not-found");
+      expect(yield* reasonOf(store.ensure(linked))).toBe("not-found");
+      expect(yield* store.list(linked.threadId)).toEqual([]);
+
+      const threadDirectory = path.dirname(folder.path);
+      yield* fs.remove(threadDirectory, { recursive: true });
+      yield* fs.symlink(outside, threadDirectory);
+      expect(yield* reasonOf(store.get(linked))).toBe("not-found");
+      expect(yield* reasonOf(store.resolveFile(page))).toBe("not-found");
+      expect(yield* store.list(linked.threadId)).toEqual([]);
+      expect(
+        yield* reasonOf(store.ensure({ ...linked, name: CanvasName.make("created-outside") })),
+      ).toBe("not-found");
+      expect(yield* fs.readDirectory(outside)).toEqual(["board"]);
+
+      yield* store.removeThread(linked.threadId);
+      expect(yield* fs.readFileString(path.join(outsideCanvas, "index.html"))).toBe("outside");
     }),
   );
 

@@ -225,8 +225,8 @@ const make = Effect.gen(function* () {
     yield* fs.makeDirectory(parent, { recursive: true });
     const staged = yield* fs.makeTempDirectory({ directory: parent, prefix: STAGING_PREFIX });
     const replaced = `${staged}-replaced`;
-    yield* Effect.gen(function* () {
-      yield* copyTree(source, staged);
+    // An interruption between the renames would leave the old folder under its hidden name.
+    const promote = Effect.gen(function* () {
       const hadTarget = Option.isSome(yield* entryType(target));
       if (hadTarget) {
         yield* fs.rename(target, replaced);
@@ -234,12 +234,16 @@ const make = Effect.gen(function* () {
       yield* fs
         .rename(staged, target)
         .pipe(
-          Effect.tapError(() =>
+          Effect.onError(() =>
             hadTarget ? Effect.ignore(fs.rename(replaced, target)) : Effect.void,
           ),
         );
       yield* Effect.ignore(fs.remove(replaced, { recursive: true, force: true }));
-    }).pipe(Effect.ensuring(Effect.ignore(fs.remove(staged, { recursive: true, force: true }))));
+    }).pipe(Effect.uninterruptible);
+    yield* copyTree(source, staged).pipe(
+      Effect.andThen(promote),
+      Effect.ensuring(Effect.ignore(fs.remove(staged, { recursive: true, force: true }))),
+    );
   });
 
   const list: CanvasLibrary["Service"]["list"] = Effect.fn("CanvasLibrary.list")(function* (input) {

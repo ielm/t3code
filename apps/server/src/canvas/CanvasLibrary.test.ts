@@ -2,7 +2,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -28,8 +31,13 @@ const threadPortLayer = Layer.effect(
   }),
 );
 
-const layerWith = (env: Record<string, string>) =>
+const layerWith = (
+  env: Record<string, string>,
+  /** Wraps the file system the library sees. The store and the test keep the real one. */
+  observe: (fs: FileSystem.FileSystem) => FileSystem.FileSystem = (fs) => fs,
+) =>
   CanvasLibrary.layer.pipe(
+    Layer.provide(Layer.effect(FileSystem.FileSystem, Effect.map(FileSystem.FileSystem, observe))),
     Layer.provideMerge(CanvasStore.layer),
     Layer.provideMerge(threadPortLayer),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-canvas-library-" })),
@@ -81,6 +89,10 @@ it.effect("lists both libraries, tolerating bad manifests and missing directorie
       "notes/canvas.json": JSON.stringify({ title: "Notes" }),
     });
     yield* fs.symlink(path.join(personalDir, "notes"), path.join(personalDir, "linked"));
+    yield* fs.symlink(
+      path.join(personalDir, "notes", "canvas.json"),
+      path.join(projectDir, "no-manifest", "canvas.json"),
+    );
 
     expect(yield* library.list({ threadId })).toEqual([
       {
@@ -215,6 +227,27 @@ it.effect("instantiates a saved canvas as a thread canvas with empty state", () 
       path.join(personalDir, "notes", "index.html"),
       path.join(personalDir, "notes", "link.html"),
     );
+    yield* writeFiles(path.join(personalDir, "linked-manifest"), { "index.html": "page" });
+    yield* fs.symlink(
+      path.join(personalDir, "notes", "canvas.json"),
+      path.join(personalDir, "linked-manifest", "canvas.json"),
+    );
+    yield* fs.symlink(path.join(personalDir, "notes"), path.join(personalDir, "linked-root"));
+
+    const withoutManifest = yield* library.instantiate({
+      threadId,
+      from: { scope: "personal", name: "linked-manifest" },
+    });
+    expect(withoutManifest).toMatchObject({
+      manifest: null,
+      manifestIssue: "canvas.json is missing.",
+    });
+    expect(yield* fs.readDirectory(withoutManifest.path)).toEqual(["index.html"]);
+    yield* store.remove({ threadId, name: "linked-manifest" });
+    const linkedRoot = yield* library
+      .instantiate({ threadId, from: { scope: "personal", name: "linked-root" } })
+      .pipe(Effect.flip);
+    expect(linkedRoot).toMatchObject({ _tag: "CanvasError", reason: "not-found" });
 
     const created = yield* library.instantiate({
       threadId,
@@ -249,6 +282,54 @@ it.effect("instantiates a saved canvas as a thread canvas with empty state", () 
     expect(missing).toMatchObject({ _tag: "CanvasError", reason: "not-found" });
     expect(yield* store.list(threadId)).toEqual(["todo"]);
   }).pipe(Effect.provide(layerWith({}))),
+);
+
+it.effect(
+  "keeps a saved canvas whose overwrite fails or is interrupted while it is moved aside",
+  () =>
+    Effect.gen(function* () {
+      const promoting = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let promotion: "dies" | "waits" = "dies";
+      const observe = (fs: FileSystem.FileSystem) =>
+        FileSystem.FileSystem.of({
+          ...fs,
+          rename: (from, to) => {
+            const promotes = from.includes(".canvas-copy-") && !from.endsWith("-replaced");
+            if (!promotes) return fs.rename(from, to);
+            if (promotion === "dies") return Effect.die("the rename threw");
+            return Deferred.succeed(promoting, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(fs.rename(from, to)),
+            );
+          },
+        });
+
+      yield* Effect.gen(function* () {
+        const { library, store, fs, path, projectDir } = yield* services;
+        const target = { threadId, name: "board" };
+        const folder = yield* store.ensure(target);
+        yield* fs.writeFileString(path.join(folder.path, "index.html"), "edited");
+        const savedPage = path.join(projectDir, "board", "index.html");
+        yield* writeFiles(projectDir, { "board/index.html": "saved" });
+        const overwrite = library.save({ ...target, to: "project", overwrite: true });
+
+        expect(Exit.isFailure(yield* Effect.exit(overwrite))).toBe(true);
+        expect(yield* fs.readDirectory(projectDir)).toEqual(["board"]);
+        expect(yield* fs.readFileString(savedPage)).toBe("saved");
+
+        promotion = "waits";
+        const saving = yield* overwrite.pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(promoting);
+        const interrupting = yield* Fiber.interrupt(saving).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(interrupting);
+        expect(yield* fs.readDirectory(projectDir)).toEqual(["board"]);
+        expect(yield* fs.readFileString(savedPage)).toBe("edited");
+      }).pipe(Effect.provide(layerWith({}, observe)));
+    }),
 );
 
 it.effect("removes a saved canvas and succeeds when it is already gone", () =>
