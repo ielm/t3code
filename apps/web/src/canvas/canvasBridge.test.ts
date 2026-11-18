@@ -273,9 +273,9 @@ describe("createCanvasBridge", () => {
     const bridge = createCanvasBridge(4);
     const context = (gesture: CanvasGestureSample) => ({ snapshot: withChange(), gesture });
     expect(callGesture(bridge, "restart", pressed(1_000))).toBe(true);
-    expect(callGesture(bridge, "restart", pressed(2_000))).toBe(false);
-    bridge.receive({ t3canvas: v, type: "setState", patch: {} }, context(idle(6_100)));
-    expect(bridge.receive(approve, context(pressed(6_200))).type).toBe("event");
+    expect(callGesture(bridge, "restart", pressed(1_200))).toBe(false);
+    bridge.receive({ t3canvas: v, type: "setState", patch: {} }, context(idle(1_300)));
+    expect(bridge.receive(approve, context(pressed(1_400))).type).toBe("event");
   });
 
   it("shares one press between the pages of a reloaded canvas", () => {
