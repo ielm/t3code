@@ -547,6 +547,14 @@
       "types": "./src/inlineSkills.ts",
       "import": "./src/inlineSkills.ts"
     },
+    "./canvas": {
+      "types": "./src/canvas.ts",
+      "import": "./src/canvas.ts"
+    },
+    "./canvasRuntime": {
+      "types": "./src/canvasRuntime.ts",
+      "import": "./src/canvasRuntime.ts"
+    },
     "./mcpApp": {
       "types": "./src/mcpApp.ts",
       "import": "./src/mcpApp.ts"
