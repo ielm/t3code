@@ -1,14 +1,29 @@
-import type {
+import {
+  CANVAS_DEFAULT_ENTRY,
+  CANVAS_MANIFEST_FILE,
+  CANVAS_MAX_PER_THREAD,
   CanvasError,
   CanvasManifest,
   CanvasName,
-  CanvasRelativePath,
   CanvasState,
-  ThreadId,
+  NonNegativeInt,
+  type CanvasRelativePath,
+  type ThreadId,
 } from "@t3tools/contracts";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as Context from "effect/Context";
-import type * as Effect from "effect/Effect";
-import type * as Stream from "effect/Stream";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
+
+import { ServerConfig } from "../config.ts";
 
 export interface CanvasTarget {
   readonly threadId: ThreadId;
@@ -61,3 +76,297 @@ export class CanvasStore extends Context.Service<
     readonly removeThread: (threadId: ThreadId) => Effect.Effect<void, CanvasError>;
   }
 >()("t3/canvas/CanvasStore") {}
+
+const CHANGE_DEBOUNCE = Duration.millis(100);
+const STARTER_TITLE_MAX_LENGTH = 120;
+const MANIFEST_ISSUE_MAX_LENGTH = 200;
+// writeFileStringAtomically stages in a sibling directory with this prefix; a crash can leave one behind.
+const ATOMIC_WRITE_TEMP_PREFIX = "t3-write-";
+
+const isCanvasName = Schema.is(CanvasName);
+
+const PersistedStateJson = Schema.fromJsonString(
+  Schema.Struct({ state: CanvasState, stateRevision: NonNegativeInt }),
+);
+const decodePersistedState = Schema.decodeUnknownEffect(PersistedStateJson);
+const encodePersistedState = Schema.encodeEffect(PersistedStateJson);
+const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(CanvasManifest));
+
+const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
+
+const escapeHtml = (text: string) =>
+  text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+
+const starterManifest = (title: string) => `${JSON.stringify({ title }, null, 2)}\n`;
+
+const starterPage = (title: string) => `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+  </head>
+  <body>
+    <main>
+      <h1>${escapeHtml(title)}</h1>
+      <pre id="state"></pre>
+    </main>
+    <script>
+      canvas.onState((state) => {
+        document.getElementById("state").textContent = JSON.stringify(state, null, 2);
+      });
+    </script>
+  </body>
+</html>
+`;
+
+const make = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const { stateDir } = yield* ServerConfig;
+  const canvasesDir = path.join(stateDir, "canvases");
+  const ensureLock = yield* Semaphore.make(1);
+
+  // Lowercase hex of the id's UTF-8 bytes: injective, and safe on case-insensitive filesystems.
+  const threadDir = (threadId: ThreadId) =>
+    path.join(canvasesDir, Buffer.from(threadId, "utf8").toString("hex"));
+  const folderPath = (target: CanvasTarget) => path.join(threadDir(target.threadId), target.name);
+  const statePath = (target: CanvasTarget) =>
+    path.join(threadDir(target.threadId), `${target.name}.state.json`);
+
+  const storageFailed = (canvas?: string) => (cause: unknown) =>
+    new CanvasError({
+      reason: "storage-failed",
+      ...(canvas === undefined ? {} : { canvas }),
+      cause,
+    });
+  const notFoundOrStorageFailed = (canvas: string) => (cause: PlatformError.PlatformError) =>
+    isNotFound(cause)
+      ? new CanvasError({ reason: "not-found", canvas })
+      : storageFailed(canvas)(cause);
+
+  const isWithin = (parent: string, child: string) => {
+    const relative = path.relative(parent, child);
+    return (
+      relative === "" ||
+      (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    );
+  };
+
+  const loadManifest = Effect.fn("CanvasStore.loadManifest")(function* (target: CanvasTarget) {
+    const raw = yield* fs.readFileString(path.join(folderPath(target), CANVAS_MANIFEST_FILE)).pipe(
+      Effect.asSome,
+      Effect.catchIf(isNotFound, () => Effect.succeedNone),
+      Effect.mapError(storageFailed(target.name)),
+    );
+    if (Option.isNone(raw)) {
+      return { manifest: null, manifestIssue: `${CANVAS_MANIFEST_FILE} is missing.` };
+    }
+    return yield* decodeManifest(raw.value).pipe(
+      Effect.map((manifest) => ({ manifest, manifestIssue: null })),
+      Effect.catchTags({
+        SchemaError: (error) =>
+          Effect.succeed({
+            manifest: null,
+            manifestIssue: `${CANVAS_MANIFEST_FILE} is invalid: ${error.message}`
+              .replaceAll(/\s+/g, " ")
+              .slice(0, MANIFEST_ISSUE_MAX_LENGTH),
+          }),
+      }),
+    );
+  });
+
+  const get: CanvasStore["Service"]["get"] = Effect.fn("CanvasStore.get")(function* (target) {
+    const folder = folderPath(target);
+    const info = yield* fs.stat(folder).pipe(Effect.mapError(notFoundOrStorageFailed(target.name)));
+    if (info.type !== "Directory") {
+      return yield* new CanvasError({ reason: "not-found", canvas: target.name });
+    }
+    return {
+      threadId: target.threadId,
+      name: target.name,
+      path: folder,
+      ...(yield* loadManifest(target)),
+    };
+  });
+
+  const list: CanvasStore["Service"]["list"] = Effect.fn("CanvasStore.list")(function* (threadId) {
+    const directory = threadDir(threadId);
+    const entries = yield* fs.readDirectory(directory).pipe(
+      Effect.catchIf(isNotFound, () => Effect.succeed<ReadonlyArray<string>>([])),
+      Effect.mapError(storageFailed()),
+    );
+    const names = entries
+      .filter(isCanvasName)
+      .filter((name) => !name.startsWith(ATOMIC_WRITE_TEMP_PREFIX))
+      .toSorted();
+    const directories = yield* Effect.forEach(names, (name) =>
+      fs.stat(path.join(directory, name)).pipe(
+        Effect.map((info) => (info.type === "Directory" ? Option.some(name) : Option.none())),
+        Effect.catchIf(isNotFound, () => Effect.succeedNone),
+        Effect.mapError(storageFailed(name)),
+      ),
+    );
+    return directories.flatMap(Option.toArray);
+  });
+
+  const writeIfAbsent = (filePath: string, contents: string) =>
+    fs.writeFileString(filePath, contents, { flag: "wx" }).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "AlreadyExists",
+        () => Effect.void,
+      ),
+    );
+
+  const ensure: CanvasStore["Service"]["ensure"] = Effect.fn("CanvasStore.ensure")(
+    function* (input) {
+      const folder = folderPath(input);
+      const exists = yield* fs.exists(folder).pipe(Effect.mapError(storageFailed(input.name)));
+      if (!exists) {
+        const existing = yield* list(input.threadId);
+        if (existing.length >= CANVAS_MAX_PER_THREAD) {
+          return yield* new CanvasError({ reason: "too-many-canvases", canvas: input.name });
+        }
+        const title =
+          (input.title ?? "").trim().slice(0, STARTER_TITLE_MAX_LENGTH).trim() || input.name;
+        yield* fs
+          .makeDirectory(folder, { recursive: true })
+          .pipe(
+            Effect.andThen(
+              writeIfAbsent(path.join(folder, CANVAS_MANIFEST_FILE), starterManifest(title)),
+            ),
+            Effect.andThen(
+              writeIfAbsent(path.join(folder, CANVAS_DEFAULT_ENTRY), starterPage(title)),
+            ),
+            Effect.mapError(storageFailed(input.name)),
+          );
+      }
+      return yield* get(input);
+    },
+    (effect) => ensureLock.withPermits(1)(effect),
+  );
+
+  const changes: CanvasStore["Service"]["changes"] = (target) =>
+    fs.watch(folderPath(target), { recursive: true }).pipe(
+      Stream.mapError(notFoundOrStorageFailed(target.name)),
+      // A save emits several events, and fs.watch can fire before content is flushed.
+      Stream.debounce(CHANGE_DEBOUNCE),
+      Stream.mapEffect(() =>
+        get(target).pipe(
+          Effect.asSome,
+          Effect.catchIf(
+            (error) => error.reason === "not-found",
+            () => Effect.succeedNone,
+          ),
+        ),
+      ),
+      Stream.takeWhile(Option.isSome),
+      Stream.map((folder) => folder.value),
+    );
+
+  const resolveFile: CanvasStore["Service"]["resolveFile"] = Effect.fn("CanvasStore.resolveFile")(
+    function* (input) {
+      const folder = folderPath(input);
+      const invalidPath = new CanvasError({ reason: "invalid-path", canvas: input.name });
+      const requested = path.resolve(folder, input.path);
+      if (requested === folder || !isWithin(folder, requested)) {
+        return yield* invalidPath;
+      }
+      const realFolder = yield* fs
+        .realPath(folder)
+        .pipe(Effect.mapError(notFoundOrStorageFailed(input.name)));
+
+      let existing = requested;
+      const missing: Array<string> = [];
+      while (true) {
+        const real = yield* fs.realPath(existing).pipe(
+          Effect.asSome,
+          Effect.catchIf(isNotFound, () => Effect.succeedNone),
+          Effect.mapError(storageFailed(input.name)),
+        );
+        if (Option.isSome(real)) {
+          if (!isWithin(realFolder, real.value)) {
+            return yield* invalidPath;
+          }
+          return path.join(real.value, ...missing);
+        }
+        // A dangling link would send a later write wherever it points.
+        const isLink = yield* fs.readLink(existing).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+        if (isLink) {
+          return yield* invalidPath;
+        }
+        missing.unshift(path.basename(existing));
+        existing = path.dirname(existing);
+      }
+    },
+  );
+
+  const readState: CanvasStore["Service"]["readState"] = Effect.fn("CanvasStore.readState")(
+    function* (target) {
+      const raw = yield* fs.readFileString(statePath(target)).pipe(
+        Effect.asSome,
+        Effect.catchIf(isNotFound, () => Effect.succeedNone),
+        Effect.mapError(storageFailed(target.name)),
+      );
+      if (Option.isNone(raw)) {
+        return null;
+      }
+      return yield* decodePersistedState(raw.value).pipe(
+        Effect.mapError(storageFailed(target.name)),
+      );
+    },
+  );
+
+  const writeState: CanvasStore["Service"]["writeState"] = Effect.fn("CanvasStore.writeState")(
+    function* (input) {
+      const contents = yield* encodePersistedState({
+        state: input.state,
+        stateRevision: input.stateRevision,
+      }).pipe(Effect.mapError(storageFailed(input.name)));
+      yield* writeFileStringAtomically({ filePath: statePath(input), contents }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError(storageFailed(input.name)),
+      );
+    },
+  );
+
+  const remove: CanvasStore["Service"]["remove"] = Effect.fn("CanvasStore.remove")(
+    function* (target) {
+      yield* fs
+        .remove(folderPath(target), { recursive: true, force: true })
+        .pipe(
+          Effect.andThen(fs.remove(statePath(target), { force: true })),
+          Effect.mapError(storageFailed(target.name)),
+        );
+    },
+  );
+
+  const removeThread: CanvasStore["Service"]["removeThread"] = Effect.fn(
+    "CanvasStore.removeThread",
+  )(function* (threadId) {
+    yield* fs
+      .remove(threadDir(threadId), { recursive: true, force: true })
+      .pipe(Effect.mapError(storageFailed()));
+  });
+
+  return CanvasStore.of({
+    ensure,
+    get,
+    list,
+    changes,
+    resolveFile,
+    readState,
+    writeState,
+    remove,
+    removeThread,
+  });
+});
+
+export const layer = Layer.effect(CanvasStore, make);
