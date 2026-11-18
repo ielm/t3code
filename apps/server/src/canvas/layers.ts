@@ -1,5 +1,6 @@
 import * as Layer from "effect/Layer";
 
+import * as CanvasDiagnostics from "./CanvasDiagnostics.ts";
 import * as CanvasFunctions from "./CanvasFunctions.ts";
 import * as CanvasHttp from "./CanvasHttp.ts";
 import * as CanvasService from "./CanvasService.ts";
@@ -12,6 +13,7 @@ import * as CanvasThreadPort from "./CanvasThreadPort.ts";
  * gives the WebSocket handlers, the HTTP route and the MCP toolkit the same instances.
  */
 export const layer = Layer.mergeAll(
+  CanvasDiagnostics.layer,
   CanvasFunctions.layer,
   CanvasHttp.layer,
   CanvasThreadCleanup.layer,

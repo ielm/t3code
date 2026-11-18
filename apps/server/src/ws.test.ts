@@ -93,6 +93,7 @@ import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import * as ScratchThreadPromotion from "./project/ScratchThreadPromotion.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
+import * as CanvasDiagnostics from "./canvas/CanvasDiagnostics.ts";
 import * as CanvasFunctions from "./canvas/CanvasFunctions.ts";
 import * as CanvasHttp from "./canvas/CanvasHttp.ts";
 import * as CanvasService from "./canvas/CanvasService.ts";
@@ -840,6 +841,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),
   Layer.mock(HostResources.HostResources)({}),
   Layer.mock(McpAppRequests.McpAppRequests)({}),
+  Layer.mock(CanvasDiagnostics.CanvasDiagnostics)({}),
   Layer.mock(CanvasFunctions.CanvasFunctions)({}),
   Layer.mock(CanvasHttp.CanvasHttp)({}),
   Layer.mock(CanvasService.CanvasService)({}),

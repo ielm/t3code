@@ -120,6 +120,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
+import * as CanvasDiagnostics from "./canvas/CanvasDiagnostics.ts";
 import * as CanvasFunctions from "./canvas/CanvasFunctions.ts";
 import * as CanvasHttp from "./canvas/CanvasHttp.ts";
 import * as CanvasService from "./canvas/CanvasService.ts";
@@ -1462,6 +1463,7 @@ export const layerWsRpc = (
       const mcpAppRequests = yield* McpAppRequests.McpAppRequests;
       const canvasService = yield* CanvasService.CanvasService;
       const canvasFunctions = yield* CanvasFunctions.CanvasFunctions;
+      const canvasDiagnostics = yield* CanvasDiagnostics.CanvasDiagnostics;
       const canvasHttp = yield* CanvasHttp.CanvasHttp;
       const analytics = yield* AnalyticsService.AnalyticsService;
       const originProps = clientAnalyticsProps;
@@ -2582,8 +2584,7 @@ export const layerWsRpc = (
         [WS_METHODS.canvasSendEvent]: (input) => canvasService.submitEvent(input),
         [WS_METHODS.canvasCall]: (input) =>
           canvasFunctions.call(input).pipe(Effect.map((value) => ({ value }))),
-        // Canvas diagnostics are wired in a later step.
-        [WS_METHODS.canvasLog]: () => Effect.void,
+        [WS_METHODS.canvasLog]: (input) => canvasDiagnostics.record(input),
         [WS_METHODS.subscribeCanvases]: (input) => canvasService.stream(input.threadId),
         [WS_METHODS.providerUploadFeedback]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
