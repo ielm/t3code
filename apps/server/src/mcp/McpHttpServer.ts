@@ -88,6 +88,8 @@ import {
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
+import * as CanvasHandlers from "./toolkits/canvas/handlers.ts";
+import { CanvasToolkit } from "./toolkits/canvas/tools.ts";
 import { MessageToolkit } from "./toolkits/message/tools.ts";
 import * as MessageHandlers from "./toolkits/message/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
@@ -1239,6 +1241,7 @@ export const layerHtmlToolkit = Layer.mergeAll(
   toolkitRegistration(HtmlRenderToolkit, HtmlHandlers.layerRender),
   imageToolRegistration(registerHtmlPreview(), HtmlHandlers.layerPreview),
 ).pipe(Layer.provide(HtmlRender.layer));
+const layerCanvasToolkit = toolkitRegistration(CanvasToolkit, CanvasHandlers.layer);
 
 const layerPreviewStandardToolkitRegistration = toolkitRegistration(
   PreviewStandardToolkit,
@@ -1357,6 +1360,7 @@ export const layerTools = Layer.mergeAll(
   layerIssuesToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  layerCanvasToolkit,
   layerMessageToolkit,
 );
 
