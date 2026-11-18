@@ -100,6 +100,15 @@ const setup = (invocation: McpInvocationContext.McpInvocationScope = scope) => {
           snapshot: snapshotOf(input.name, 5),
           path: `/state/canvas/${input.name}`,
         }),
+      openFrom: (input) =>
+        input.as === "open"
+          ? Effect.fail(
+              new CanvasLibrary.CanvasAlreadyExistsError({ scope: "thread", canvas: input.as }),
+            )
+          : called("openFrom", input, {
+              snapshot: snapshotOf(input.as ?? input.name, 0),
+              path: `/state/canvas/${input.as ?? input.name}`,
+            }),
       patchState: (input) => called("patchState", input, snapshotOf(input.name, 6)),
       close: (input) => called("close", input, undefined),
       get: (input) =>
@@ -132,22 +141,6 @@ const setup = (invocation: McpInvocationContext.McpInvocationScope = scope) => {
               new CanvasLibrary.CanvasAlreadyExistsError({ scope: input.to, canvas: input.as }),
             )
           : called("save", input, savedEntry(input.to, input.as ?? input.name)),
-      instantiate: (input) =>
-        input.as === "open"
-          ? Effect.fail(
-              new CanvasLibrary.CanvasAlreadyExistsError({ scope: "thread", canvas: input.as }),
-            )
-          : called(
-              "instantiate",
-              { ...input, name: input.from.name },
-              {
-                threadId: input.threadId,
-                name: input.as ?? input.from.name,
-                path: "/state/canvas/copied",
-                manifest: null,
-                manifestIssue: null,
-              },
-            ),
     }),
     Layer.mock(CanvasDiagnostics.CanvasDiagnostics)({
       recent: (input) =>
@@ -232,7 +225,7 @@ it.effect("creates a canvas from a saved one before opening it", () => {
       yield* resultOf(toolkit.handle("canvas_open", { name: "pr-12", title: "PR 12", from })),
     ).toEqual({ name: "pr-12", path: "/state/canvas/pr-12", pageRevision: 3, stateRevision: 5 });
     expect(calls).toEqual([
-      ["instantiate", { threadId, from, as: "pr-12", name: "review" }],
+      ["openFrom", { threadId, scope: "project", name: "review", as: "pr-12" }],
       ["open", { threadId, name: "pr-12", title: "PR 12" }],
     ]);
 

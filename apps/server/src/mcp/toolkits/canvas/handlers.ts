@@ -121,9 +121,8 @@ const standardHandlers = {
       const threadId = yield* callerThreadId("canvas_open");
       const canvases = yield* CanvasService.CanvasService;
       if (from !== undefined) {
-        const library = yield* CanvasLibrary.CanvasLibrary;
-        yield* library
-          .instantiate({ threadId, from, as: input.name })
+        yield* canvases
+          .openFrom({ threadId, scope: from.scope, name: from.name, as: input.name })
           .pipe(
             Effect.mapError((error) =>
               error._tag === "CanvasError" && error.reason === "not-found"
