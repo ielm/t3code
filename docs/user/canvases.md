@@ -7,7 +7,7 @@ Canvases work on web and desktop. A thread can have up to eight, each in its own
 ## What happens when you use one
 
 - Controls that only change the view, such as sorting, filtering or switching tabs, respond at once and cost nothing.
-- A control the page marks as sending to the agent, such as a Submit or Approve button, goes straight to the thread as a message. There is no confirmation. If the agent is busy, the message waits its turn.
+- A control the page marks as sending to the agent, such as a Submit or Approve button, goes straight to the thread as a message. There is no confirmation. If the agent is busy, the message waits its turn. A page can only send as a result of your click or key press, never on its own.
 - A canvas can show live data and take actions on your machine without the agent, through functions the agent declares for it. See below.
 
 Closing a canvas tab only hides it. Find it again under Canvases in the panel's `+` menu, or ask the agent to show it. A canvas is removed when the agent closes it or the thread is deleted.
@@ -29,6 +29,7 @@ A canvas is a folder of files. Its `canvas.json` can declare functions, each a c
 - A `read` function may run whenever the page asks, including on a timer. Use it for live data.
 - A `change` function runs only as a direct result of your click or key press in the canvas. A page cannot trigger one on its own.
 - Functions run in the thread's workspace with your user's permissions, the same as the agent's own commands. Nothing a canvas does not declare can run.
+- Actions that need your click (a `change` function, a send, opening a link) are limited to one per second.
 - A function that writes files into its own canvas folder reloads the page, because the folder is watched. Write elsewhere.
 
 The page itself has no network access. Everything it shows from outside comes through its functions or from the agent.
@@ -39,6 +40,8 @@ Right-click a canvas tab to save it:
 
 - **Save to project** puts it in `.canvases/` at the workspace root, so it is versioned with the repository and available in every thread of that project.
 - **Save to personal library** puts it in `canvases/` in your T3 home folder, available in every project. Set `T3CODE_CANVAS_LIBRARY_DIR` to keep the library somewhere else, such as a repository of your own.
+
+A canvas opened from a project's `.canvases/` folder starts with its functions off, because those commands came with the repository. The panel lists them; choose Enable functions once you are happy to run them. Canvases your agent builds and ones from your personal library are not affected.
 
 Saving copies the page and its functions, never its current data. Saved canvases appear under Canvases in the `+` menu; opening one makes a fresh copy in the thread that you and the agent can change freely. Agents can also list, open and save canvases themselves.
 

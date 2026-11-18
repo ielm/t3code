@@ -60,7 +60,8 @@ const CANVAS_OPEN_DESCRIPTION = [
     "`send` reaches you as a message, so use it only for an explicit user action such as a button.",
     '`call` runs a function from `canvas.json`: `{"functions": {"name": {"command": ["cmd", "arg"], "kind": "read" | "change", "timeoutSeconds"?: n}}}`.',
     "The command runs in the thread's workspace with no shell and no agent turn: `args` arrive as JSON on stdin, stdout is the result, `T3_CANVAS_DIR` is the canvas folder.",
-    "`read` may be called any time, `change` only from a user click or key press.",
+    "`read` may be called any time; `change` and `send` only work from a user click or key press.",
+    "A function that writes into the canvas folder reloads the page, so write elsewhere.",
   ],
   [
     "Plain semantic HTML is already styled and `html_render`'s theme variables are set.",
