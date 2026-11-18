@@ -1,7 +1,10 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   CANVAS_EVENT_PAYLOAD_MAX_BYTES,
   CANVAS_EVENTS_PER_MINUTE,
+  CANVAS_MANIFEST_FILE,
+  CANVAS_MAX_PER_THREAD,
   CANVAS_STATE_MAX_BYTES,
   CanvasError,
   ThreadId,
@@ -9,16 +12,21 @@ import {
   type CanvasName,
   type CanvasStreamItem,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { ServerConfig } from "../config.ts";
+import * as CanvasLibrary from "./CanvasLibrary.ts";
 import * as CanvasService from "./CanvasService.ts";
 import * as CanvasStore from "./CanvasStore.ts";
 import * as CanvasThreadPort from "./CanvasThreadPort.ts";
@@ -29,7 +37,17 @@ const notes = { threadId, name: "notes" };
 
 const keyOf = (target: CanvasStore.CanvasTarget) => `${target.threadId}/${target.name}`;
 
-const makeHarness = Effect.sync(() => {
+// Folders are real directories, because the service reads them to tell a changed folder from a
+// replayed one. The store's manifests, state and change stream stay in memory.
+const makeHarness = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fs.realPath(
+    yield* fs.makeTempDirectoryScoped({ prefix: "t3code-canvas-service-" }),
+  );
+  const workspace = path.join(root, "workspace");
+  const folderPath = (target: CanvasStore.CanvasTarget) =>
+    path.join(root, "canvases", target.threadId, target.name);
   const folders = new Map<string, CanvasStore.CanvasFolder>();
   const states = new Map<string, CanvasStore.CanvasPersistedState>();
   const changeQueues = new Map<string, Queue.Queue<CanvasStore.CanvasFolder>>();
@@ -48,20 +66,20 @@ const makeHarness = Effect.sync(() => {
     new CanvasError({ reason: "not-found", canvas: target.name });
 
   const store = CanvasStore.CanvasStore.of({
-    ensure: (input) =>
-      Effect.sync(() => {
-        const existing = folders.get(keyOf(input));
-        if (existing !== undefined) return existing;
-        const folder: CanvasStore.CanvasFolder = {
-          threadId: input.threadId,
-          name: input.name,
-          path: `/canvases/${keyOf(input)}`,
-          manifest: null,
-          manifestIssue: "canvas.json is missing.",
-        };
-        folders.set(keyOf(input), folder);
-        return folder;
-      }),
+    ensure: Effect.fnUntraced(function* (input) {
+      const existing = folders.get(keyOf(input));
+      if (existing !== undefined) return existing;
+      const folder: CanvasStore.CanvasFolder = {
+        threadId: input.threadId,
+        name: input.name,
+        path: folderPath(input),
+        manifest: null,
+        manifestIssue: "canvas.json is missing.",
+      };
+      yield* fs.makeDirectory(folder.path, { recursive: true }).pipe(Effect.orDie);
+      folders.set(keyOf(input), folder);
+      return folder;
+    }),
     get: (target) => {
       const folder = folders.get(keyOf(target));
       return folder === undefined ? Effect.fail(notFound(target)) : Effect.succeed(folder);
@@ -73,7 +91,7 @@ const makeHarness = Effect.sync(() => {
           .map((folder) => folder.name),
       ),
     changes: (target) => Stream.unwrap(Effect.map(changesOf(target), Stream.fromQueue)),
-    resolveFile: (input) => Effect.succeed(`/canvases/${keyOf(input)}/${input.path}`),
+    resolveFile: (input) => Effect.succeed(path.join(folderPath(input), input.path)),
     readState: (target) => Effect.sync(() => states.get(keyOf(target)) ?? null),
     writeState: ({ state, stateRevision, revealId, ...target }) =>
       Effect.sync(() => {
@@ -83,11 +101,11 @@ const makeHarness = Effect.sync(() => {
           ...(revealId === undefined ? {} : { revealId }),
         });
       }),
-    remove: (target) =>
-      Effect.sync(() => {
-        folders.delete(keyOf(target));
-        states.delete(keyOf(target));
-      }),
+    remove: Effect.fnUntraced(function* (target) {
+      yield* fs.remove(folderPath(target), { recursive: true, force: true }).pipe(Effect.orDie);
+      folders.delete(keyOf(target));
+      states.delete(keyOf(target));
+    }),
     removeThread: () => Effect.void,
   });
 
@@ -96,7 +114,7 @@ const makeHarness = Effect.sync(() => {
       Effect.sync(() => {
         delivered.push(text);
       }),
-    workspaceRoot: () => Effect.succeed("/workspace"),
+    workspaceRoot: () => Effect.succeed(workspace),
   });
 
   const random = SecureRandom.make((size) => {
@@ -106,26 +124,66 @@ const makeHarness = Effect.sync(() => {
   });
 
   const layer = CanvasService.layer.pipe(
+    Layer.provide(CanvasLibrary.layer),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), path.join(root, "home"))),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(CanvasStore.CanvasStore, store),
         Layer.succeed(CanvasThreadPort.CanvasThreadPort, port),
         Layer.succeed(SecureRandom.SecureRandom, random),
+        NodeServices.layer,
       ),
     ),
   );
+
+  const writeFiles = Effect.fnUntraced(function* (folder: string, files: Record<string, string>) {
+    for (const [relative, contents] of Object.entries(files)) {
+      const file = path.join(folder, relative);
+      yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+      yield* fs.writeFileString(file, contents);
+    }
+  });
+
+  /** What the store's watcher sends: the folder as it is now, whether or not anything changed. */
+  const emitChange = Effect.fnUntraced(function* (target: CanvasStore.CanvasTarget) {
+    yield* Queue.offer(yield* changesOf(target), folders.get(keyOf(target))!);
+  });
+
+  const writeFile = Effect.fnUntraced(function* (
+    target: CanvasStore.CanvasTarget,
+    relative: string,
+    contents: string,
+  ) {
+    yield* writeFiles(folderPath(target), { [relative]: contents });
+    yield* emitChange(target);
+  });
 
   const writeManifest = Effect.fnUntraced(function* (
     target: CanvasStore.CanvasTarget,
     manifest: CanvasManifest,
   ) {
-    const folder = { ...folders.get(keyOf(target))!, manifest, manifestIssue: null };
-    folders.set(keyOf(target), folder);
-    yield* Queue.offer(yield* changesOf(target), folder);
+    folders.set(keyOf(target), { ...folders.get(keyOf(target))!, manifest, manifestIssue: null });
+    yield* writeFile(target, CANVAS_MANIFEST_FILE, JSON.stringify(manifest));
   });
 
-  return { layer, folders, states, delivered, writeManifest };
-});
+  const saveToProjectLibrary = (name: string, files: Record<string, string>) =>
+    writeFiles(path.join(workspace, ".canvases", name), files);
+
+  return {
+    layer,
+    folders,
+    states,
+    delivered,
+    fs,
+    path,
+    folderPath,
+    emitChange,
+    writeFile,
+    writeManifest,
+    saveToProjectLibrary,
+  };
+}).pipe(Effect.provide(NodeServices.layer));
 
 const follow = Effect.fnUntraced(function* (thread: ThreadId) {
   const canvases = yield* CanvasService.CanvasService;
@@ -272,7 +330,8 @@ it.effect("restores a thread's canvases from the store after a restart", () =>
 
     yield* Effect.gen(function* () {
       const canvases = yield* CanvasService.CanvasService;
-      const first = yield* Queue.take(yield* follow(threadId));
+      const items = yield* follow(threadId);
+      const first = yield* Queue.take(items);
       expect(first).toMatchObject({
         _tag: "snapshot",
         canvases: [
@@ -285,6 +344,11 @@ it.effect("restores a thread's canvases from the store after a restart", () =>
           },
           { name: "notes", state: {}, stateRevision: 0, pageRevision: 0, revealId: shown.notes },
         ],
+      });
+      yield* harness.emitChange(board);
+      expect(yield* Queue.take(items)).toMatchObject({
+        _tag: "upsert",
+        canvas: { name: "board", pageRevision: 0 },
       });
       const patched = yield* canvases.patchState({ ...board, patch: { count: 3 } });
       expect(patched.stateRevision).toBe(3);
@@ -322,6 +386,133 @@ it.effect("bumps the page revision and rereads the manifest when the folder chan
           ],
         },
       });
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("reloads the page only when the folder's files changed", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* Effect.gen(function* () {
+      const canvases = yield* CanvasService.CanvasService;
+      yield* harness.saveToProjectLibrary("starter", { "index.html": "<p>one</p>" });
+      const opened = yield* canvases.openFrom({ threadId, scope: "project", name: "starter" });
+      const starter = { threadId, name: "starter" };
+      const items = yield* follow(threadId);
+      yield* Queue.take(items);
+      const nextPageRevision = Effect.map(Queue.take(items), (item) =>
+        item._tag === "upsert" ? item.canvas.pageRevision : item._tag,
+      );
+
+      // A new watcher on macOS replays the folder's creation.
+      yield* harness.emitChange(starter);
+      expect(yield* Queue.take(items)).toEqual({ _tag: "upsert", canvas: opened.snapshot });
+
+      yield* harness.writeFile(starter, "index.html", "<p>three</p>");
+      expect(yield* nextPageRevision).toBe(1);
+      yield* harness.emitChange(starter);
+      expect(yield* nextPageRevision).toBe(1);
+
+      yield* harness.writeFile(starter, "parts/app.js", "export {};");
+      expect(yield* nextPageRevision).toBe(2);
+
+      // Same path and size: only the modification time tells the edit apart.
+      const page = harness.path.join(harness.folderPath(starter), "index.html");
+      yield* harness.fs.writeFileString(page, "<p>seven</p>");
+      yield* harness.fs.utimes(page, 2_000_000_000, 2_000_000_000);
+      yield* harness.emitChange(starter);
+      expect(yield* nextPageRevision).toBe(3);
+
+      yield* harness.fs.remove(harness.path.join(harness.folderPath(starter), "parts", "app.js"));
+      yield* harness.emitChange(starter);
+      expect(yield* nextPageRevision).toBe(4);
+      yield* harness.emitChange(starter);
+      expect(yield* nextPageRevision).toBe(4);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("opens a saved canvas as a new thread canvas with fresh state and shows it", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* harness.saveToProjectLibrary("burndown", {
+      "index.html": "<p>chart</p>",
+      "parts/chart.js": "export {};",
+    });
+    yield* Effect.gen(function* () {
+      const canvases = yield* CanvasService.CanvasService;
+      const sprint = { threadId, name: "sprint" };
+      // State left behind by an earlier canvas of the same name must not come back.
+      harness.states.set(keyOf(sprint), { state: { stale: true }, stateRevision: 4 });
+      const items = yield* follow(threadId);
+      yield* Queue.take(items);
+
+      const opened = yield* canvases.openFrom({
+        threadId,
+        scope: "project",
+        name: "burndown",
+        as: "sprint",
+      });
+      expect(opened.snapshot).toMatchObject({ name: "sprint", pageRevision: 0 });
+      expect(opened.snapshot.state).toEqual({});
+      expect(opened.path).toBe(harness.folderPath(sprint));
+      expect(
+        yield* harness.fs.readFileString(harness.path.join(opened.path, "parts", "chart.js")),
+      ).toBe("export {};");
+      expect(yield* Queue.take(items)).toEqual({ _tag: "upsert", canvas: opened.snapshot });
+      expect((yield* canvases.get(sprint)).snapshot).toEqual(opened.snapshot);
+      expect(harness.states.get(keyOf(sprint))?.state).toEqual({});
+
+      yield* harness.writeManifest(sprint, { title: "Sprint" });
+      expect(yield* Queue.take(items)).toMatchObject({
+        _tag: "upsert",
+        canvas: { name: "sprint", title: "Sprint", pageRevision: 1 },
+      });
+
+      const sameName = yield* canvases.openFrom({ threadId, scope: "project", name: "burndown" });
+      expect(sameName.snapshot.name).toBe("burndown");
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("opening a saved canvas never replaces one, and a failed open leaves nothing", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* harness.saveToProjectLibrary("burndown", { "index.html": "<p>chart</p>" });
+    yield* Effect.gen(function* () {
+      const canvases = yield* CanvasService.CanvasService;
+      const fromBurndown = { threadId, scope: "project", name: "burndown" } as const;
+      yield* canvases.open({ ...board, state: { count: 1 } });
+      const items = yield* follow(threadId);
+      yield* Queue.take(items);
+
+      expect(
+        yield* canvases.openFrom({ ...fromBurndown, as: "board" }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "CanvasAlreadyExistsError", scope: "thread", canvas: "board" });
+      expect((yield* canvases.get(board)).snapshot).toMatchObject({
+        state: { count: 1 },
+        stateRevision: 1,
+      });
+      expect(yield* harness.fs.readDirectory(harness.folderPath(board))).toEqual([]);
+
+      expect(
+        yield* canvases.openFrom({ threadId, scope: "personal", name: "absent" }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "CanvasError", reason: "not-found" });
+      expect(yield* reasonOf(canvases.get({ threadId, name: "absent" }))).toBe("not-found");
+
+      yield* Effect.forEach(
+        Array.from({ length: CANVAS_MAX_PER_THREAD - 1 }, (_, index) => `filler-${index}`),
+        (name) => canvases.open({ threadId, name }),
+      );
+      yield* Queue.takeN(items, CANVAS_MAX_PER_THREAD - 1);
+      expect(yield* canvases.openFrom(fromBurndown).pipe(Effect.flip)).toMatchObject({
+        _tag: "CanvasError",
+        reason: "too-many-canvases",
+      });
+      expect(harness.folders.has(keyOf({ threadId, name: "burndown" }))).toBe(false);
+
+      yield* canvases.close(board);
+      expect(yield* Queue.take(items)).toEqual({ _tag: "removed", threadId, name: "board" });
     }).pipe(Effect.provide(harness.layer));
   }),
 );

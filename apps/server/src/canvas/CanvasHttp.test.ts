@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { CanvasError, type CanvasManifest, ThreadId } from "@t3tools/contracts";
 import { injectCanvasBootstrap } from "@t3tools/shared/canvasRuntime";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -14,8 +15,11 @@ import { HttpServerResponse } from "effect/http";
 import * as AssetSigner from "../assets/AssetSigner.ts";
 import * as PayloadSigner from "../auth/PayloadSigner.ts";
 import { base64UrlEncode } from "../auth/utils.ts";
+import { ServerConfig } from "../config.ts";
 import * as CanvasHttp from "./CanvasHttp.ts";
+import * as CanvasLibrary from "./CanvasLibrary.ts";
 import * as CanvasStore from "./CanvasStore.ts";
+import * as CanvasThreadPort from "./CanvasThreadPort.ts";
 
 const threadId = ThreadId.make("thread:canvas-http");
 const name = "board";
@@ -33,6 +37,12 @@ const harness = Effect.fn("harness")(function* (manifest?: CanvasManifest) {
   yield* fileSystem.writeFileString(path.join(canvasDir, "index.html"), PAGE);
   yield* fileSystem.writeFileString(path.join(canvasDir, "parts", "app.js"), "export const a = 1;");
   yield* fileSystem.writeFileString(path.join(root, "secret.txt"), "outside");
+  const workspace = path.join(root, "workspace");
+  const projectDir = path.join(workspace, ".canvases");
+  // The personal library is configured through a link, as a temp or home directory often is.
+  const personalDir = path.join(root, "personal");
+  yield* fileSystem.makeDirectory(personalDir);
+  yield* fileSystem.symlink(personalDir, path.join(root, "personal-link"));
 
   const missing = (canvas: string) => new CanvasError({ reason: "not-found", canvas });
   const signer = yield* PayloadSigner.fromSecret(new Uint8Array(32).fill(7));
@@ -66,8 +76,31 @@ const harness = Effect.fn("harness")(function* (manifest?: CanvasManifest) {
       }),
     ),
   );
+  const library = CanvasLibrary.layer.pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), path.join(root, "home"))),
+    Layer.provide(
+      ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          T3CODE_CANVAS_LIBRARY_DIR: path.join(root, "personal-link"),
+        }),
+      ),
+    ),
+    Layer.provide(
+      Layer.succeed(
+        CanvasThreadPort.CanvasThreadPort,
+        CanvasThreadPort.CanvasThreadPort.of({
+          deliver: unused,
+          workspaceRoot: (thread) =>
+            thread === threadId
+              ? Effect.succeed(workspace)
+              : Effect.fail(new CanvasError({ reason: "not-found" })),
+        }),
+      ),
+    ),
+    Layer.provide(dependencies),
+  );
   const canvasHttp = yield* Effect.service(CanvasHttp.CanvasHttp).pipe(
-    Effect.provide(CanvasHttp.layer.pipe(Layer.provide(dependencies))),
+    Effect.provide(CanvasHttp.layer.pipe(Layer.provide(library), Layer.provide(dependencies))),
   );
   const minted = yield* canvasHttp.mintUrl({ threadId, name, origin });
   const base = minted.url.slice(0, -CanvasHttp.CANVAS_WRAPPER_PATH.length);
@@ -86,7 +119,33 @@ const harness = Effect.fn("harness")(function* (manifest?: CanvasManifest) {
     return `${CanvasHttp.CANVAS_ROUTE_PREFIX}/${payload}.${yield* signer.sign(payload)}/`;
   });
 
-  return { canvasHttp, canvasDir, minted, base, token, get, forge, fileSystem, path, signer };
+  const writeFiles = Effect.fn("writeFiles")(function* (
+    folder: string,
+    files: Record<string, string>,
+  ) {
+    for (const [relative, contents] of Object.entries(files)) {
+      const file = path.join(folder, relative);
+      yield* fileSystem.makeDirectory(path.dirname(file), { recursive: true });
+      yield* fileSystem.writeFileString(file, contents);
+    }
+  });
+
+  return {
+    canvasHttp,
+    root,
+    canvasDir,
+    projectDir,
+    personalDir,
+    minted,
+    base,
+    token,
+    get,
+    forge,
+    writeFiles,
+    fileSystem,
+    path,
+    signer,
+  };
 });
 
 const folderSource = (token: string) => `${origin}${CanvasHttp.CANVAS_ROUTE_PREFIX}/${token}/`;
@@ -339,6 +398,152 @@ describe("CanvasHttp", () => {
         status: 413,
         body: "Payload Too Large",
       });
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("serves the parts of a saved canvas, and nothing else of it", () =>
+    Effect.gen(function* () {
+      const { base, token, get, writeFiles, projectDir, personalDir, fileSystem, path } =
+        yield* harness();
+      const kit = path.join(projectDir, "kit");
+      yield* writeFiles(kit, {
+        "canvas.json": JSON.stringify({ title: "Kit" }),
+        "index.html": PAGE,
+        "functions/run.sh": "#!/bin/sh",
+        "parts/chart.js": "export const chart = 1;",
+        "parts/nested/axis.js": "export const axis = 1;",
+        "parts/index.html": PAGE,
+      });
+      yield* writeFiles(path.join(personalDir, "kit"), {
+        "parts/chart.js": "export const mine = 1;",
+      });
+      yield* fileSystem.writeFile(
+        path.join(kit, "parts", "big.bin"),
+        new Uint8Array(CanvasHttp.CANVAS_MAX_FILE_BYTES + 1),
+      );
+
+      const part = yield* get(`${base}~lib/project/kit/parts/chart.js`);
+      expect(part).toMatchObject({ status: 200, body: "export const chart = 1;" });
+      const etag = part.headers.etag ?? "";
+      expect(part.headers).toEqual({
+        "access-control-allow-origin": "*",
+        "cache-control": "private, no-cache",
+        "content-length": "23",
+        "content-type": "text/javascript; charset=utf-8",
+        etag,
+        "referrer-policy": "no-referrer",
+        "x-content-type-options": "nosniff",
+      });
+      expect(yield* get(`${base}~lib/project/kit/parts/chart.js`, etag)).toMatchObject({
+        status: 304,
+        body: "",
+      });
+      expect(yield* get(`${base}~lib/project/kit/parts/nested/axis.js`)).toMatchObject({
+        status: 200,
+        body: "export const axis = 1;",
+      });
+      expect(yield* get(`${base}%7Elib/personal/kit/parts/chart.js`)).toMatchObject({
+        status: 200,
+        body: "export const mine = 1;",
+      });
+      expect((yield* get(`${base}~lib/project/kit/parts/big.bin`)).status).toBe(413);
+
+      // A part is never the page, even under the entry's file name.
+      const document = yield* get(`${base}~lib/project/kit/parts/index.html`);
+      expect(document.body).toBe(PAGE);
+      expect(document.headers["content-security-policy"]).toBe(documentCsp(token));
+
+      for (const rejected of [
+        "~lib/project/kit/canvas.json",
+        "~lib/project/kit/index.html",
+        "~lib/project/kit/functions/run.sh",
+        "~lib/project/kit/parts",
+        "~lib/project/kit/parts/",
+        "~lib/project/kit/parts/absent.js",
+        "~lib/project/absent/parts/chart.js",
+        "~lib/personal/kit/parts/nested/axis.js",
+        "~lib/thread/board/parts/app.js",
+        "~lib/project/Kit/parts/chart.js",
+        "~lib/project/kit/PARTS/chart.js",
+        "~lib/project/kit/parts/..%2Fcanvas.json",
+        "~lib/project/kit/parts/nested%2F..%2F..%2Ffunctions%2Frun.sh",
+        "~lib/project/kit/parts/%2Fetc%2Fhosts",
+        "~lib/project/kit/parts//chart.js",
+        "~lib/project/..%2F..%2Fsecret.txt",
+        "~lib/project/kit%2F..%2F..%2F..%2Fboard/parts/app.js",
+        "~lib/project/kit",
+        "~lib/",
+        "~lib",
+      ]) {
+        expect(yield* get(`${base}${rejected}`), rejected).toMatchObject({
+          status: 404,
+          body: "Not Found",
+        });
+      }
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("follows no link out of a saved canvas's parts", () =>
+    Effect.gen(function* () {
+      const { base, root, get, writeFiles, projectDir, fileSystem, path } = yield* harness();
+      const kit = path.join(projectDir, "kit");
+      yield* writeFiles(kit, {
+        "canvas.json": JSON.stringify({ title: "Kit" }),
+        "functions/run.sh": "#!/bin/sh",
+        "parts/chart.js": "export const chart = 1;",
+      });
+      yield* writeFiles(path.join(projectDir, "linked-parts"), { "canvas.json": "{}" });
+      const link = (target: string, ...at: ReadonlyArray<string>) =>
+        fileSystem.symlink(target, path.join(projectDir, ...at));
+      yield* link(path.join(kit, "parts", "chart.js"), "kit", "parts", "alias.js");
+      yield* link(path.join(kit, "canvas.json"), "kit", "parts", "manifest.json");
+      yield* link(path.join(root, "secret.txt"), "kit", "parts", "secret.txt");
+      yield* link(path.join(kit, "functions"), "kit", "parts", "fn");
+      yield* link(path.join(kit, "functions"), "linked-parts", "parts");
+      yield* link(kit, "linked-canvas");
+
+      expect(yield* get(`${base}~lib/project/kit/parts/alias.js`)).toMatchObject({
+        status: 200,
+        body: "export const chart = 1;",
+      });
+      for (const rejected of [
+        "~lib/project/kit/parts/manifest.json",
+        "~lib/project/kit/parts/secret.txt",
+        "~lib/project/kit/parts/fn/run.sh",
+        "~lib/project/linked-parts/parts/run.sh",
+        "~lib/project/linked-canvas/parts/chart.js",
+      ]) {
+        expect(yield* get(`${base}${rejected}`), rejected).toMatchObject({
+          status: 404,
+          body: "Not Found",
+        });
+      }
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("never serves a canvas's own folder under the reserved library name", () =>
+    Effect.gen(function* () {
+      const { base, canvasDir, get, writeFiles, projectDir, path } = yield* harness();
+      yield* writeFiles(canvasDir, {
+        "~lib/secret.js": "in the canvas",
+        "~lib/project/kit/parts/chart.js": "in the canvas",
+        "~lib/project/kit/parts/only-here.js": "in the canvas",
+      });
+      yield* writeFiles(path.join(projectDir, "kit"), { "parts/chart.js": "saved" });
+
+      for (const rejected of [
+        "~lib/secret.js",
+        "%7Elib/secret.js",
+        "~LIB/secret.js",
+        "~Lib/project/kit/parts/chart.js",
+        "~lib/project/kit/parts/only-here.js",
+      ]) {
+        expect(yield* get(`${base}${rejected}`), rejected).toMatchObject({
+          status: 404,
+          body: "Not Found",
+        });
+      }
+      expect((yield* get(`${base}~lib/project/kit/parts/chart.js`)).body).toBe("saved");
     }).pipe(Effect.provide(layerTest)),
   );
 });

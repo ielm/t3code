@@ -28,12 +28,15 @@ import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import * as CanvasLibrary from "./CanvasLibrary.ts";
 import * as CanvasStore from "./CanvasStore.ts";
 import * as CanvasThreadPort from "./CanvasThreadPort.ts";
 
@@ -59,6 +62,16 @@ export class CanvasService extends Context.Service<
     readonly open: (
       input: CanvasTarget & { readonly title?: string; readonly state?: CanvasState },
     ) => Effect.Effect<CanvasOpened, CanvasError>;
+    /**
+     * Creates a thread canvas from a saved one, with fresh state, and asks clients to show it.
+     * `as` names the new canvas; it takes the saved name otherwise. Never replaces a canvas.
+     */
+    readonly openFrom: (input: {
+      readonly threadId: ThreadId;
+      readonly scope: CanvasLibrary.CanvasLibraryScope;
+      readonly name: CanvasName;
+      readonly as?: CanvasName | undefined;
+    }) => Effect.Effect<CanvasOpened, CanvasError | CanvasLibrary.CanvasAlreadyExistsError>;
     /** Removes the canvas from every client and deletes its folder and state. */
     readonly close: (target: CanvasTarget) => Effect.Effect<void, CanvasError>;
     readonly get: (target: CanvasTarget) => Effect.Effect<CanvasOpened, CanvasError>;
@@ -101,6 +114,8 @@ const EVENT_RATE_WINDOW_MILLIS = 60_000;
 interface LiveCanvas {
   readonly folder: CanvasStore.CanvasFolder;
   readonly openTitle: string | undefined;
+  /** What the folder held when `pageRevision` was last settled. `null` when it could not be read. */
+  readonly fingerprint: string | null;
   readonly pageRevision: number;
   readonly stateRevision: number;
   readonly state: CanvasState;
@@ -154,7 +169,10 @@ const requireLive = (thread: ThreadCanvases, target: CanvasTarget) => {
 
 const make = Effect.gen(function* () {
   const store = yield* CanvasStore.CanvasStore;
+  const library = yield* CanvasLibrary.CanvasLibrary;
   const port = yield* CanvasThreadPort.CanvasThreadPort;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const random = yield* SecureRandom.SecureRandom;
   const scope = yield* Effect.scope;
   const threads = new Map<ThreadId, ThreadCanvases>();
@@ -180,16 +198,45 @@ const make = Effect.gen(function* () {
       return PubSub.publish(thread.items, { _tag: "upsert", canvas: toSnapshot(live) });
     });
 
+  // Path, size and modification time of every file. A new watcher can replay the folder's
+  // creation, so an emission alone does not mean the page has anything new to load.
+  const fingerprintOf = (folderPath: string) =>
+    fs.readDirectory(folderPath, { recursive: true }).pipe(
+      Effect.flatMap((entries) =>
+        Effect.forEach(entries.toSorted(), (entry) =>
+          fs.stat(path.join(folderPath, entry)).pipe(
+            Effect.map((info) =>
+              info.type === "File"
+                ? [`${entry}\0${info.size}\0${Option.getOrUndefined(info.mtime)?.getTime()}`]
+                : [],
+            ),
+            Effect.orElseSucceed(() => []),
+          ),
+        ),
+      ),
+      Effect.map((files) => files.flat().join("\n")),
+      Effect.orElseSucceed(() => null),
+    );
+
   const watch = (thread: ThreadCanvases, target: CanvasTarget) =>
     store.changes(target).pipe(
       Stream.runForEach((folder) =>
-        thread.lock.withPermits(1)(
-          Effect.suspend(() => {
-            const live = thread.canvases.get(target.name);
-            return live === undefined
-              ? Effect.void
-              : put(thread, { ...live, folder, pageRevision: live.pageRevision + 1 });
-          }),
+        fingerprintOf(folder.path).pipe(
+          Effect.flatMap((fingerprint) =>
+            thread.lock.withPermits(1)(
+              Effect.suspend(() => {
+                const live = thread.canvases.get(target.name);
+                if (live === undefined) return Effect.void;
+                const changed = fingerprint === null || fingerprint !== live.fingerprint;
+                return put(thread, {
+                  ...live,
+                  folder,
+                  fingerprint,
+                  pageRevision: live.pageRevision + (changed ? 1 : 0),
+                });
+              }),
+            ),
+          ),
         ),
       ),
       Effect.ignoreCause({ log: true }),
@@ -206,13 +253,14 @@ const make = Effect.gen(function* () {
         folder: store.get({ threadId, name }),
         persisted: store.readState({ threadId, name }),
         freshRevealId: nextId,
-      }),
+      }).pipe(Effect.bind("fingerprint", ({ folder }) => fingerprintOf(folder.path))),
     );
-    for (const { folder, persisted, freshRevealId } of stored) {
+    for (const { folder, persisted, freshRevealId, fingerprint } of stored) {
       const revealId = persisted?.revealId ?? freshRevealId;
       thread.canvases.set(folder.name, {
         folder,
         openTitle: undefined,
+        fingerprint,
         pageRevision: 0,
         stateRevision: persisted?.stateRevision ?? 0,
         state: persisted?.state ?? {},
@@ -241,44 +289,73 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const open: CanvasService["Service"]["open"] = Effect.fn("CanvasService.open")(function* (input) {
-    return yield* withThread(input.threadId, (thread) =>
-      Effect.gen(function* () {
-        const target = { threadId: input.threadId, name: input.name };
-        const existing = thread.canvases.get(input.name);
-        if (existing === undefined && thread.canvases.size >= CANVAS_MAX_PER_THREAD) {
-          return yield* new CanvasError({ reason: "too-many-canvases", canvas: input.name });
-        }
-        if (input.state !== undefined) yield* checkStateSize(input.name, input.state);
-        const folder = yield* store.ensure({
-          ...target,
-          ...(input.title === undefined ? {} : { title: input.title }),
-        });
-        const stored = existing ??
-          (yield* store.readState(target)) ?? { state: {}, stateRevision: 0 };
-        const persisted =
-          input.state === undefined
-            ? { state: stored.state, stateRevision: stored.stateRevision }
-            : { state: input.state, stateRevision: stored.stateRevision + 1 };
-        const revealId = yield* nextId;
-        return yield* Effect.gen(function* () {
-          yield* store.writeState({ ...target, ...persisted, revealId });
-          const live: LiveCanvas = {
-            folder,
-            openTitle: input.title ?? existing?.openTitle,
-            pageRevision: existing?.pageRevision ?? 0,
-            ...persisted,
-            revealId,
-            events: existing?.events ?? [],
-            eventTimes: existing?.eventTimes ?? [],
-            watcher: existing?.watcher ?? (yield* watch(thread, target)),
-          };
-          yield* put(thread, live);
-          return { snapshot: toSnapshot(live), path: folder.path };
-        }).pipe(Effect.uninterruptible);
-      }),
-    );
+  const hasRoomFor = (thread: ThreadCanvases, name: CanvasName) =>
+    thread.canvases.has(name) || thread.canvases.size < CANVAS_MAX_PER_THREAD
+      ? Effect.void
+      : Effect.fail(new CanvasError({ reason: "too-many-canvases", canvas: name }));
+
+  // Runs under the thread's lock, inside the span of the operation that took it.
+  const openLocked = Effect.fnUntraced(function* (
+    thread: ThreadCanvases,
+    input: Parameters<CanvasService["Service"]["open"]>[0],
+  ) {
+    const target = { threadId: input.threadId, name: input.name };
+    const existing = thread.canvases.get(input.name);
+    yield* hasRoomFor(thread, input.name);
+    if (input.state !== undefined) yield* checkStateSize(input.name, input.state);
+    const folder = yield* store.ensure({
+      ...target,
+      ...(input.title === undefined ? {} : { title: input.title }),
+    });
+    const stored = existing ?? (yield* store.readState(target)) ?? { state: {}, stateRevision: 0 };
+    const persisted =
+      input.state === undefined
+        ? { state: stored.state, stateRevision: stored.stateRevision }
+        : { state: input.state, stateRevision: stored.stateRevision + 1 };
+    const revealId = yield* nextId;
+    const fingerprint =
+      existing === undefined ? yield* fingerprintOf(folder.path) : existing.fingerprint;
+    return yield* Effect.gen(function* () {
+      yield* store.writeState({ ...target, ...persisted, revealId });
+      const live: LiveCanvas = {
+        folder,
+        openTitle: input.title ?? existing?.openTitle,
+        fingerprint,
+        pageRevision: existing?.pageRevision ?? 0,
+        ...persisted,
+        revealId,
+        events: existing?.events ?? [],
+        eventTimes: existing?.eventTimes ?? [],
+        watcher: existing?.watcher ?? (yield* watch(thread, target)),
+      };
+      yield* put(thread, live);
+      return { snapshot: toSnapshot(live), path: folder.path };
+    }).pipe(Effect.uninterruptible);
   });
+
+  const open: CanvasService["Service"]["open"] = Effect.fn("CanvasService.open")(function* (input) {
+    return yield* withThread(input.threadId, (thread) => openLocked(thread, input));
+  });
+
+  const openFrom: CanvasService["Service"]["openFrom"] = Effect.fn("CanvasService.openFrom")(
+    function* (input) {
+      // Copying under the lock keeps a restore or an open from watching the half-copied folder.
+      return yield* withThread(input.threadId, (thread) =>
+        Effect.gen(function* () {
+          yield* hasRoomFor(thread, input.as ?? input.name);
+          const folder = yield* library.instantiate({
+            threadId: input.threadId,
+            from: { scope: input.scope, name: input.name },
+            as: input.as,
+          });
+          const target = { threadId: input.threadId, name: folder.name };
+          return yield* openLocked(thread, { ...target, state: {} }).pipe(
+            Effect.onError(() => Effect.ignore(store.remove(target))),
+          );
+        }),
+      );
+    },
+  );
 
   const close: CanvasService["Service"]["close"] = Effect.fn("CanvasService.close")(
     function* (target) {
@@ -445,6 +522,7 @@ const make = Effect.gen(function* () {
 
   return CanvasService.of({
     open,
+    openFrom,
     close,
     get,
     patchState,

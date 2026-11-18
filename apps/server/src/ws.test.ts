@@ -96,6 +96,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as CanvasDiagnostics from "./canvas/CanvasDiagnostics.ts";
 import * as CanvasFunctions from "./canvas/CanvasFunctions.ts";
 import * as CanvasHttp from "./canvas/CanvasHttp.ts";
+import * as CanvasLibrary from "./canvas/CanvasLibrary.ts";
 import * as CanvasService from "./canvas/CanvasService.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -844,6 +845,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(CanvasDiagnostics.CanvasDiagnostics)({}),
   Layer.mock(CanvasFunctions.CanvasFunctions)({}),
   Layer.mock(CanvasHttp.CanvasHttp)({}),
+  Layer.mock(CanvasLibrary.CanvasLibrary)({}),
   Layer.mock(CanvasService.CanvasService)({}),
   Layer.mock(ModelManifest.ModelManifest)({}),
   Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({}),

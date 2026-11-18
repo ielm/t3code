@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as CanvasLibrary from "./CanvasLibrary.ts";
 import * as CanvasService from "./CanvasService.ts";
 import * as CanvasStore from "./CanvasStore.ts";
 import * as CanvasThreadCleanup from "./CanvasThreadCleanup.ts";
@@ -44,6 +45,7 @@ const layerTest = (
     ),
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(CanvasLibrary.CanvasLibrary)({}),
         Layer.mock(CanvasThreadPort.CanvasThreadPort)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           streamDomainEvents: Stream.fromQueue(events),

@@ -1,6 +1,8 @@
 import {
   CANVAS_DEFAULT_ENTRY,
+  CANVAS_PARTS_DIRECTORY,
   CanvasError,
+  CanvasLibraryScope,
   CanvasName,
   CanvasRelativePath,
   type CanvasUrlInput,
@@ -16,6 +18,7 @@ import * as Base64Url from "effect/encoding/Base64Url";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -23,10 +26,13 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as AssetSigner from "../assets/AssetSigner.ts";
 import { base64UrlEncode } from "../auth/utils.ts";
 import { requestUrl } from "../requestUrl.ts";
+import * as CanvasLibrary from "./CanvasLibrary.ts";
 import * as CanvasStore from "./CanvasStore.ts";
 
 export const CANVAS_ROUTE_PREFIX = "/api/canvas";
 export const CANVAS_WRAPPER_PATH = "__wrap";
+/** First path segment of a saved canvas's parts: `~lib/<scope>/<name>/parts/<path>`. */
+const CANVAS_LIBRARY_SEGMENT = "~lib";
 export const CANVAS_MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 const TOKEN_BUCKET_MS = 6 * 60 * 60 * 1000;
@@ -50,6 +56,8 @@ const decodeClaims = (payload: string) =>
     onSuccess: decodeClaimsJson,
   });
 const decodeRelativePath = Schema.decodeUnknownOption(CanvasRelativePath);
+const isLibraryScope = Schema.is(CanvasLibraryScope);
+const isCanvasName = Schema.is(CanvasName);
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   html: "text/html; charset=utf-8",
@@ -157,7 +165,9 @@ const notFound = HttpServerResponse.text("Not Found", { status: 404 });
 
 /**
  * Serves canvas folders to the sandboxed panel frame. The signed token in the path is the only
- * credential, and one token covers one folder so a page's relative URLs need no signing.
+ * credential, and one token covers one folder so a page's relative URLs need no signing. The same
+ * prefix serves the `parts/` of the canvases saved for the token's thread, so a page can import
+ * them without a wider CSP.
  */
 export class CanvasHttp extends Context.Service<
   CanvasHttp,
@@ -174,8 +184,10 @@ export class CanvasHttp extends Context.Service<
 
 const make = Effect.gen(function* () {
   const store = yield* CanvasStore.CanvasStore;
+  const library = yield* CanvasLibrary.CanvasLibrary;
   const signer = yield* AssetSigner.AssetSigner;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
 
   const mintUrl = Effect.fn("CanvasHttp.mintUrl")(function* (input: CanvasUrlInput) {
     const origin = cspOrigin(input.origin);
@@ -227,6 +239,37 @@ const make = Effect.gen(function* () {
     return claims;
   });
 
+  // The two resolvers run inside `respond` and share its span. `null` is a path that names no file.
+  const resolveCanvasFile = Effect.fnUntraced(function* (
+    target: CanvasStore.CanvasTarget,
+    requested: string,
+  ) {
+    const relativePath = Option.getOrNull(decodeRelativePath(requested));
+    if (relativePath === null) return null;
+    return { filePath: yield* store.resolveFile({ ...target, path: relativePath }), relativePath };
+  });
+
+  const resolvePart = Effect.fnUntraced(function* (threadId: ThreadId, requested: string) {
+    const [segment, scope, name, directory, ...rest] = requested.split("/");
+    const partPath = Option.getOrNull(decodeRelativePath(rest.join("/")));
+    if (
+      segment !== CANVAS_LIBRARY_SEGMENT ||
+      !isLibraryScope(scope) ||
+      !isCanvasName(name) ||
+      directory !== CANVAS_PARTS_DIRECTORY ||
+      partPath === null
+    ) {
+      return null;
+    }
+    const saved = yield* fileSystem.realPath(yield* library.resolve({ threadId, scope, name }));
+    const partsDir = path.join(saved, CANVAS_PARTS_DIRECTORY);
+    // A link may point anywhere, and `parts` may itself be one, so the real file decides.
+    const filePath = yield* fileSystem.realPath(path.join(partsDir, partPath));
+    return filePath.startsWith(`${partsDir}${path.sep}`)
+      ? { filePath, relativePath: partPath }
+      : null;
+  });
+
   const respond: CanvasHttp["Service"]["respond"] = Effect.fn("CanvasHttp.respond")(
     function* (input) {
       const prefix = `${CANVAS_ROUTE_PREFIX}/`;
@@ -254,11 +297,13 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const relativePath = Option.getOrNull(
-        decodeRelativePath(requested === "" ? entry : requested),
-      );
-      if (relativePath === null) return notFound;
-      const filePath = yield* store.resolveFile({ ...target, path: relativePath });
+      // Reserved in any casing, so a canvas folder of that name is never served under it.
+      const isPart = requested.split("/", 1)[0]?.toLowerCase() === CANVAS_LIBRARY_SEGMENT;
+      const file = isPart
+        ? yield* resolvePart(claims.threadId, requested)
+        : yield* resolveCanvasFile(target, requested === "" ? entry : requested);
+      if (file === null) return notFound;
+      const { filePath, relativePath } = file;
       const info = yield* fileSystem.stat(filePath);
       if (info.type !== "File") return notFound;
       if (info.size > BigInt(CANVAS_MAX_FILE_BYTES)) {
@@ -271,7 +316,7 @@ const make = Effect.gen(function* () {
 
       const extension = extensionOf(relativePath);
       const bytes =
-        relativePath === entry && extension === "html"
+        !isPart && relativePath === entry && extension === "html"
           ? new TextEncoder().encode(injectCanvasBootstrap(new TextDecoder().decode(raw)))
           : raw;
       const modifiedAt = Option.getOrUndefined(info.mtime);

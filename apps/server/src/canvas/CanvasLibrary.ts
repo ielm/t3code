@@ -47,6 +47,15 @@ export class CanvasAlreadyExistsError extends Schema.TaggedError<CanvasAlreadyEx
   }
 }
 
+/** A client has no use for the server's path. */
+export const toWireEntry = ({ path: _, ...entry }: CanvasLibraryEntry) => entry;
+
+/** `CanvasError` is the only canvas failure on the wire, so a transport folds this one into it. */
+export const toCanvasError = (error: CanvasError | CanvasAlreadyExistsError) =>
+  error._tag === "CanvasAlreadyExistsError"
+    ? new CanvasError({ reason: "already-exists", canvas: error.canvas })
+    : error;
+
 /**
  * Saved canvases. `project` is `.canvases/` in the thread's workspace, versioned with the repo;
  * `personal` is `canvases/` in the T3 home, or `T3CODE_CANVAS_LIBRARY_DIR`.

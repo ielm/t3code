@@ -23,6 +23,7 @@ import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import { HtmlRenderBrowserError } from "../htmlRender/headlessChrome.ts";
 import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import * as CanvasHttp from "./CanvasHttp.ts";
+import * as CanvasLibrary from "./CanvasLibrary.ts";
 import * as CanvasScreenshot from "./CanvasScreenshot.ts";
 import * as CanvasService from "./CanvasService.ts";
 import * as CanvasStore from "./CanvasStore.ts";
@@ -116,6 +117,7 @@ const setup = Effect.fn("setup")(function* (
     manifestIssue: null,
   };
   const dependencies = Layer.mergeAll(
+    Layer.mock(CanvasLibrary.CanvasLibrary)({}),
     Layer.succeed(
       AssetSigner.AssetSigner,
       yield* PayloadSigner.fromSecret(new Uint8Array(32).fill(7)),
@@ -144,6 +146,7 @@ const setup = Effect.fn("setup")(function* (
     CanvasService.CanvasService,
     CanvasService.CanvasService.of({
       open: unused,
+      openFrom: unused,
       close: unused,
       get: (target) =>
         target.name === name ? Effect.succeed({ snapshot, path: canvasDir }) : Effect.fail(missing),
