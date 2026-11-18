@@ -10,7 +10,12 @@ import {
   type CanvasHostMessage,
 } from "./canvas.ts";
 import { CANVAS_KIT_CSS, CANVAS_RUNTIME_SCRIPT, injectCanvasBootstrap } from "./canvasRuntime.ts";
-import { htmlRenderTheme, htmlRenderThemeFragment, htmlRenderThemeMessage } from "./htmlRender.ts";
+import {
+  htmlRenderTheme,
+  htmlRenderThemeFragment,
+  htmlRenderThemeMessage,
+  readHtmlRenderLinkRequest,
+} from "./htmlRender.ts";
 import { T3_CODE_LIGHT_THEME_COLORS } from "./themePalettes.ts";
 
 interface PageCanvas {
@@ -27,6 +32,8 @@ interface PageCanvas {
 
 type Listener = (event: Record<string, unknown>) => void;
 
+const PAGE_URL = "https://env.test/api/canvas/token/index.html?v=1";
+
 function boot(options: { readonly hash?: string } = {}) {
   const posted: Array<Record<string, unknown>> = [];
   const parent = {
@@ -36,6 +43,7 @@ function boot(options: { readonly hash?: string } = {}) {
     },
   };
   const listeners = new Map<string, Array<Listener>>();
+  const clickListeners: Array<Listener> = [];
   const themeStyle = { textContent: "" };
   const consoleErrors: Array<ReadonlyArray<unknown>> = [];
   const replacedUrls: Array<string> = [];
@@ -53,8 +61,21 @@ function boot(options: { readonly hash?: string } = {}) {
   };
   NodeVM.runInNewContext(CANVAS_RUNTIME_SCRIPT, {
     window,
-    document: { getElementById: (id: string) => (id === "t3-theme" ? themeStyle : null) },
-    location: { hash: options.hash ?? "", pathname: "/canvas/index.html", search: "?v=1" },
+    document: {
+      baseURI: PAGE_URL,
+      getElementById: (id: string) => (id === "t3-theme" ? themeStyle : null),
+      addEventListener: (type: string, listener: Listener, capture: boolean) => {
+        expect([type, capture]).toEqual(["click", true]);
+        clickListeners.push(listener);
+      },
+    },
+    location: {
+      href: PAGE_URL,
+      hash: options.hash ?? "",
+      pathname: "/canvas/index.html",
+      search: "?v=1",
+    },
+    URL,
     history: {
       state: null,
       replaceState: (_state: unknown, _title: string, url: string) => replacedUrls.push(url),
@@ -74,6 +95,23 @@ function boot(options: { readonly hash?: string } = {}) {
     replacedUrls,
     clock,
     dispatch,
+    /** Clicks a child of a link with this `href`, or of no link when it is `null`. */
+    click: (href: string | null, modifiers: { metaKey?: boolean; ctrlKey?: boolean } = {}) => {
+      let prevented = false;
+      const element = (selector: string | null) => ({
+        matches: (query: string) => query === selector,
+        getAttribute: () => href,
+      });
+      const event = {
+        ...modifiers,
+        composedPath: () => [element(null), element(href === null ? null : "a[href]"), {}],
+        preventDefault: () => {
+          prevented = true;
+        },
+      };
+      for (const listener of clickListeners) listener(event);
+      return { prevented };
+    },
     host: (data: CanvasHostMessage | object, source: object = parent) =>
       dispatch("message", { source, data }),
     init: (state: Record<string, unknown> = {}) =>
@@ -336,6 +374,46 @@ describe("CANVAS_RUNTIME_SCRIPT", () => {
     expect(page.themeStyle.textContent).toBe(
       ":root{color-scheme:dark;--background:#000bodydisplay:none;}",
     );
+  });
+
+  it("asks the panel to open http and https links instead of navigating", () => {
+    const page = boot();
+    page.posted.length = 0;
+
+    expect(page.click("https://example.com/docs?q=1#top", { metaKey: true })).toEqual({
+      prevented: true,
+    });
+    expect(page.click("//cdn.example.com/x")).toEqual({ prevented: true });
+
+    expect(page.posted.map(readHtmlRenderLinkRequest)).toEqual([
+      { id: "t3-link-1", url: "https://example.com/docs?q=1#top", metaKey: true, ctrlKey: false },
+      { id: "t3-link-2", url: "https://cdn.example.com/x", metaKey: false, ctrlKey: false },
+    ]);
+  });
+
+  it.each([
+    ["a fragment of this page", "#section", false],
+    ["an empty fragment", "#", false],
+    ["this page's own URL with a fragment", `${PAGE_URL}#section`, false],
+    ["a javascript: URL", "javascript:void(0)", false],
+    ["an address that does not parse", "https://[", false],
+    ["this page without a fragment", "", true],
+    ["a mailto: address", "mailto:someone@example.com", true],
+    ["a file: path", "file:///etc/hosts", true],
+  ])("posts nothing for %s", (_name, href, prevented) => {
+    const page = boot();
+    page.posted.length = 0;
+
+    expect(page.click(href)).toEqual({ prevented });
+    expect(page.posted).toEqual([]);
+  });
+
+  it("leaves clicks outside a link alone", () => {
+    const page = boot();
+    page.posted.length = 0;
+
+    expect(page.click(null)).toEqual({ prevented: false });
+    expect(page.posted).toEqual([]);
   });
 });
 

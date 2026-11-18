@@ -69,5 +69,21 @@ export function createCanvasEnvironmentAtoms<R, E>(
       label: "environment-command:canvas:log",
       tag: WS_METHODS.canvasLog,
     }),
+    libraryList: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:canvas:library-list",
+      tag: WS_METHODS.canvasLibraryList,
+    }),
+    librarySave: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:canvas:library-save",
+      tag: WS_METHODS.canvasLibrarySave,
+    }),
+    libraryOpen: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:canvas:library-open",
+      tag: WS_METHODS.canvasLibraryOpen,
+    }),
+    libraryRemove: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:canvas:library-remove",
+      tag: WS_METHODS.canvasLibraryRemove,
+    }),
   };
 }

@@ -2,7 +2,12 @@ import { type CanvasSnapshot, CanvasName, ThreadId } from "@t3tools/contracts";
 import { CANVAS_BRIDGE_VERSION, type CanvasPageMessage } from "@t3tools/shared/canvas";
 import { describe, expect, it } from "vite-plus/test";
 
-import { acceptCanvasPageMessage, canvasFrameSrc, createCanvasBridge } from "./canvasBridge";
+import {
+  acceptCanvasLinkRequest,
+  acceptCanvasPageMessage,
+  canvasFrameSrc,
+  createCanvasBridge,
+} from "./canvasBridge";
 
 const v = CANVAS_BRIDGE_VERSION;
 
@@ -76,6 +81,47 @@ describe("acceptCanvasPageMessage", () => {
     ["a non-object payload", { source: frameWindow, data: "ready" }, frameWindow],
   ])("drops %s", (_name, event, frame) => {
     expect(acceptCanvasPageMessage(event, frame)).toBeUndefined();
+  });
+});
+
+describe("acceptCanvasLinkRequest", () => {
+  const frameWindow = {};
+  const frameUrl = "https://env.test/api/canvas/token.sig/__wrap";
+  const request = (url: unknown, extra: object = {}) => ({
+    source: frameWindow,
+    data: { jsonrpc: "2.0", id: "t3-link-1", method: "ui/open-link", params: { url, ...extra } },
+  });
+
+  it("takes an outside link and its modifier keys from the frame's own window", () => {
+    expect(
+      acceptCanvasLinkRequest(
+        request("https://example.com/a?b#c", { metaKey: true }),
+        frameWindow,
+        frameUrl,
+      ),
+    ).toEqual({ url: "https://example.com/a?b#c", metaKey: true, ctrlKey: false });
+    expect(
+      acceptCanvasLinkRequest(request("https://env.test/settings"), frameWindow, frameUrl),
+    ).toEqual({ url: "https://env.test/settings", metaKey: false, ctrlKey: false });
+  });
+
+  it.each([
+    ["another window", { ...request("https://example.com/"), source: {} }, frameWindow],
+    ["no frame window", { ...request("https://example.com/"), source: null }, null],
+    [
+      "a file in the canvas folder",
+      request("https://env.test/api/canvas/token.sig/parts/a.html"),
+      frameWindow,
+    ],
+    ["a scheme other than http", request("javascript:alert(1)"), frameWindow],
+    ["an address that does not parse", request("https://["), frameWindow],
+    [
+      "a canvas message",
+      { source: frameWindow, data: { t3canvas: v, type: "ready" } },
+      frameWindow,
+    ],
+  ])("drops %s", (_name, event, frame) => {
+    expect(acceptCanvasLinkRequest(event, frame, frameUrl)).toBeUndefined();
   });
 });
 

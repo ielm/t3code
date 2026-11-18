@@ -5,6 +5,7 @@ import {
   type CanvasPageMessage,
   decodeCanvasPageMessage,
 } from "@t3tools/shared/canvas";
+import { readHtmlRenderLinkRequest } from "@t3tools/shared/htmlRender";
 import * as Option from "effect/Option";
 
 const CANVAS_PAGE_REVISION_PARAM = "pageRevision";
@@ -58,6 +59,35 @@ export function acceptCanvasPageMessage(
     return undefined;
   }
   return Option.getOrUndefined(decodeCanvasPageMessage(event.data));
+}
+
+export interface CanvasLinkRequest {
+  readonly url: string;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+}
+
+/**
+ * A link the page asks the panel to open, in the message html_render pages send. A link into the
+ * canvas's own folder is refused: its signed address is only good inside the frame.
+ */
+export function acceptCanvasLinkRequest(
+  event: { readonly source: unknown; readonly data: unknown },
+  frameWindow: unknown,
+  frameUrl: string,
+): CanvasLinkRequest | undefined {
+  if (frameWindow === null || frameWindow === undefined || event.source !== frameWindow) {
+    return undefined;
+  }
+  const request = readHtmlRenderLinkRequest(event.data);
+  if (request === undefined || !URL.canParse(request.url)) return undefined;
+  const link = new URL(request.url);
+  const frame = URL.canParse(frameUrl) ? new URL(frameUrl) : null;
+  const folder = frame?.pathname.slice(0, frame.pathname.lastIndexOf("/") + 1);
+  if (link.origin === frame?.origin && folder !== undefined && link.pathname.startsWith(folder)) {
+    return undefined;
+  }
+  return { url: request.url, metaKey: request.metaKey, ctrlKey: request.ctrlKey };
 }
 
 const stateMessage = (snapshot: CanvasSnapshot): CanvasHostMessage => ({

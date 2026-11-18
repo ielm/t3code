@@ -4,9 +4,12 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { type ReactNode, useEffect, useEffectEvent, useState } from "react";
 
+import { useOpenLink } from "~/browser/useOpenLink";
 import { toastManager } from "~/components/ui/toast";
 import { stackedThreadToast } from "~/components/ui/toastHelpers";
 import { environmentCatalog } from "~/connection/catalog";
+import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
+import { readLocalApi } from "~/localApi";
 import { canvasEnvironment, canvasSnapshotAtom } from "~/state/canvas";
 import { usePreparedConnection } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -53,6 +56,8 @@ export default function CanvasSurface(props: {
   const sendEvent = useAtomCommand(canvasEnvironment.sendEvent, { reportFailure: false });
   const call = useAtomCommand(canvasEnvironment.call, { reportFailure: false });
   const log = useAtomCommand(canvasEnvironment.log, { reportFailure: false });
+  const openChangeRequestLink = useOpenChangeRequestLink(threadRef);
+  const openLink = useOpenLink(threadRef);
 
   const [urlState, setUrlState] = useState<CanvasUrlState>(null);
   const minted = urlState?._tag === "Minted" ? urlState.minted : null;
@@ -131,6 +136,22 @@ export default function CanvasSurface(props: {
           input: { ...target, pageRevision: snapshot.pageRevision, ...input },
         })
       }
+      // The route an html_render page's links take: modified clicks go to the system browser,
+      // pull requests to their panel, the rest by the user's link preference.
+      onOpenLink={({ url, ...modifiers }) => {
+        const logFailure = (cause: unknown) => console.error(cause);
+        if (modifiers.metaKey || modifiers.ctrlKey) {
+          void readLocalApi()?.shell.openExternal(url).catch(logFailure);
+          return;
+        }
+        const handled = openChangeRequestLink(
+          { ...modifiers, preventDefault: () => undefined, stopPropagation: () => undefined },
+          url,
+          undefined,
+          environmentId,
+        );
+        if (!handled) void openLink(url, { event: modifiers }).catch(logFailure);
+      }}
     />
   );
 }

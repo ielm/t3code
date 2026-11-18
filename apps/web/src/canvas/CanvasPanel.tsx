@@ -8,11 +8,13 @@ import { Alert, AlertDescription } from "~/components/ui/alert";
 import { useHtmlRenderTheme } from "~/hooks/useHtmlRenderTheme";
 
 import {
+  acceptCanvasLinkRequest,
   acceptCanvasPageMessage,
   canvasFrameSrc,
   type CanvasCallOutcome,
   type CanvasCallRequest,
   type CanvasEventInput,
+  type CanvasLinkRequest,
   type CanvasLogInput,
   createCanvasBridge,
 } from "./canvasBridge";
@@ -25,6 +27,8 @@ export interface CanvasPanelProps {
   readonly onEvent: (input: CanvasEventInput) => void;
   readonly onCall: (input: CanvasCallRequest) => Promise<CanvasCallOutcome>;
   readonly onLog: (input: CanvasLogInput) => void;
+  /** Called only for a link the user clicked in the page. */
+  readonly onOpenLink: (link: CanvasLinkRequest) => void;
 }
 
 export function CanvasPanel(props: CanvasPanelProps) {
@@ -72,11 +76,16 @@ function CanvasFrame(props: CanvasPanelProps & { readonly url: string }) {
     if (message !== undefined) frameRef.current?.contentWindow?.postMessage(message, "*");
   }, [bridge, snapshot]);
   const onFrameMessage = useEffectEvent((frame: HTMLIFrameElement, event: MessageEvent) => {
-    const message = acceptCanvasPageMessage(event, frame.contentWindow);
-    if (message === undefined) return;
     // The page cannot claim a gesture: activation in the frame is visible here, and the focus
     // check excludes activation from input elsewhere in the app.
     const gesture = navigator.userActivation?.isActive === true && document.activeElement === frame;
+    const link = acceptCanvasLinkRequest(event, frame.contentWindow, props.url);
+    if (link !== undefined) {
+      if (gesture) props.onOpenLink(link);
+      return;
+    }
+    const message = acceptCanvasPageMessage(event, frame.contentWindow);
+    if (message === undefined) return;
     const action = bridge.receive(message, { snapshot, gesture });
     switch (action.type) {
       case "post":

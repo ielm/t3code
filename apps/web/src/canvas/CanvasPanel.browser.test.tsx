@@ -38,6 +38,7 @@ it("answers the page's ready with init, forwards its events, and posts later sta
     onEvent,
     onCall: vi.fn(),
     onLog: vi.fn(),
+    onOpenLink: vi.fn(),
   };
   await using screen = await render(
     <CanvasPanel snapshot={snapshot} url={PAGE_URL} {...handlers} />,

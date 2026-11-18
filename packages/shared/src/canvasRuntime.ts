@@ -18,6 +18,8 @@ const LIGHT_THEME = htmlRenderTheme(T3_CODE_LIGHT_THEME_COLORS, "light");
 const THEME_METHOD = htmlRenderThemeMessage(DARK_THEME).method;
 const THEME_FRAGMENT_KEY = htmlRenderThemeFragment(DARK_THEME).slice(1).split("=", 1)[0]!;
 const THEME_STYLE_ID = "t3-theme";
+// What `readHtmlRenderLinkRequest` accepts, so the panel opens a canvas link as html_render does.
+const OPEN_LINK_METHOD = "ui/open-link";
 
 const CANVAS_LOG_WINDOW_MS = 10_000;
 const CANVAS_LOGS_PER_WINDOW = 20;
@@ -224,6 +226,38 @@ export const CANVAS_RUNTIME_SCRIPT = `(function () {
   window.addEventListener("unhandledrejection", function (event) {
     log("Unhandled rejection: " + describe(event.reason));
   });
+
+  // The frame has nowhere to go: its sandbox blocks new windows and the wrapper's policy blocks
+  // other pages. The panel opens http(s) links for the user; nothing else navigates.
+  var links = 0;
+  document.addEventListener("click", function (event) {
+    var path = event.composedPath();
+    var link;
+    for (var i = 0; i < path.length && !link; i++) {
+      if (path[i] && path[i].matches && path[i].matches("a[href]")) link = path[i];
+    }
+    if (!link) return;
+    var url;
+    try {
+      url = new URL(link.getAttribute("href"), document.baseURI);
+    } catch (error) {
+      return;
+    }
+    if (url.protocol === "javascript:") return;
+    var parts = url.href.split("#");
+    if (parts[0] === location.href.split("#")[0]) {
+      if (parts.length === 1) event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    if (!/^https?:$/.test(url.protocol)) return;
+    host.postMessage({
+      jsonrpc: "2.0",
+      id: "t3-link-" + ++links,
+      method: ${JSON.stringify(OPEN_LINK_METHOD)},
+      params: { url: url.href, metaKey: event.metaKey === true, ctrlKey: event.ctrlKey === true }
+    }, "*");
+  }, true);
 
   post({ type: "ready" });
 })();`;
