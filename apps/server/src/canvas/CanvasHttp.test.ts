@@ -152,7 +152,7 @@ const folderSource = (token: string) => `${origin}${CanvasHttp.CANVAS_ROUTE_PREF
 
 const documentCsp = (token: string) => {
   const C = folderSource(token);
-  return `default-src 'none'; script-src 'unsafe-inline' ${C}; style-src 'unsafe-inline' ${C}; img-src data: blob: ${C}; font-src data: ${C}; media-src data: blob: ${C}; connect-src ${C}; worker-src blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts`;
+  return `default-src 'none'; script-src 'unsafe-inline' ${C}; style-src 'unsafe-inline' ${C}; img-src data: blob: ${C}; font-src data: ${C}; media-src data: blob: ${C}; connect-src ${C}; worker-src blob:; frame-src 'none'; webrtc 'block'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts`;
 };
 
 describe("CanvasHttp", () => {
@@ -361,7 +361,7 @@ describe("CanvasHttp", () => {
       const wrapper = yield* get(minted.url);
       expect(wrapper.status).toBe(200);
       expect(wrapper.headers).toMatchObject({
-        "content-security-policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src ${folderSource(token)}; sandbox allow-scripts`,
+        "content-security-policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src ${folderSource(token)}; webrtc 'block'; sandbox allow-scripts`,
         "content-type": "text/html; charset=utf-8",
         "cache-control": "private, no-cache",
         "referrer-policy": "no-referrer",

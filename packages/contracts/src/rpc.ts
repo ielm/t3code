@@ -34,6 +34,7 @@ import {
   CanvasSnapshot,
   CanvasStreamItem,
   CanvasSubscribeInput,
+  CanvasTrustFunctionsInput,
   CanvasUrlInput,
   CanvasUrlResult,
 } from "./canvas.ts";
@@ -492,6 +493,7 @@ export const WS_METHODS = {
   canvasSendEvent: "canvas.sendEvent",
   canvasCall: "canvas.call",
   canvasLog: "canvas.log",
+  canvasTrustFunctions: "canvas.trustFunctions",
   canvasLibraryList: "canvas.library.list",
   canvasLibrarySave: "canvas.library.save",
   canvasLibraryOpen: "canvas.library.open",
@@ -1710,6 +1712,12 @@ const WsCanvasLogRpc = Rpc.make(WS_METHODS.canvasLog, {
   error: canvasRpcError,
 });
 
+const WsCanvasTrustFunctionsRpc = Rpc.make(WS_METHODS.canvasTrustFunctions, {
+  payload: CanvasTrustFunctionsInput,
+  success: CanvasSnapshot,
+  error: canvasRpcError,
+});
+
 const WsCanvasLibraryListRpc = Rpc.make(WS_METHODS.canvasLibraryList, {
   payload: CanvasLibraryListInput,
   success: CanvasLibraryListResult,
@@ -2501,6 +2509,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsCanvasSendEventRpc,
   WsCanvasCallRpc,
   WsCanvasLogRpc,
+  WsCanvasTrustFunctionsRpc,
   WsCanvasLibraryListRpc,
   WsCanvasLibrarySaveRpc,
   WsCanvasLibraryOpenRpc,

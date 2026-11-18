@@ -51,6 +51,3 @@ node_modules/
 .pnpm-store/
 
 /packages/ssh/.ssh-launcher-test-*/
-
-# bv (b9s) local config and caches
-.bv/

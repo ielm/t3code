@@ -119,6 +119,7 @@ function documentCsp(sources: ReadonlyArray<string>): string {
     `connect-src ${allowed}`,
     "worker-src blob:",
     "frame-src 'none'",
+    "webrtc 'block'",
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'none'",
@@ -127,7 +128,7 @@ function documentCsp(sources: ReadonlyArray<string>): string {
 }
 
 function wrapperCsp(folderSource: string): string {
-  return `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src ${folderSource}; sandbox allow-scripts`;
+  return `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src ${folderSource}; webrtc 'block'; sandbox allow-scripts`;
 }
 
 function wrapperDocument(entry: string): string {

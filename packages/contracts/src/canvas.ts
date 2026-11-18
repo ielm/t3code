@@ -103,6 +103,11 @@ export const CanvasSnapshot = Schema.Struct({
   functions: Schema.Array(CanvasFunctionSummary),
   /** Changes only when the agent asks for the canvas to be shown. */
   revealId: Schema.String,
+  /**
+   * The canvas was copied from the project library, so its commands came with the repository and
+   * not from the user or their agent. Functions stay off until the user enables them.
+   */
+  functionsBlocked: Schema.optional(Schema.Boolean),
   /** Why `canvas.json` could not be used. The page still renders. */
   manifestIssue: Schema.optional(Schema.String),
 });
@@ -192,6 +197,9 @@ export type CanvasCallInput = typeof CanvasCallInput.Type;
 export const CanvasCallResult = Schema.Struct({ value: Schema.Unknown });
 export type CanvasCallResult = typeof CanvasCallResult.Type;
 
+export const CanvasTrustFunctionsInput = Schema.Struct(CanvasTarget);
+export type CanvasTrustFunctionsInput = typeof CanvasTrustFunctionsInput.Type;
+
 export const CanvasLogInput = Schema.Struct({
   ...CanvasTarget,
   pageRevision: NonNegativeInt,
@@ -257,6 +265,7 @@ export const CanvasErrorReason = Schema.Literals([
   "stale-page",
   "function-not-declared",
   "function-needs-gesture",
+  "functions-blocked",
   "function-busy",
   "function-args-too-large",
   "function-output-too-large",
@@ -298,6 +307,8 @@ export class CanvasError extends Schema.TaggedError<CanvasError>()("CanvasError"
         return "canvas.json does not declare that function.";
       case "function-needs-gesture":
         return "That function changes things, so it only runs from a click or key press.";
+      case "functions-blocked":
+        return "This canvas came from the project library. Enable its functions in the canvas panel first.";
       case "function-busy":
         return "Too many functions are already running for this canvas.";
       case "function-args-too-large":
