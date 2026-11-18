@@ -73,6 +73,19 @@ describe("closedViewStore", () => {
     expect(() => useClosedViewStore.getState().remember(diff(refB))).not.toThrow();
   });
 
+  it("keeps a saved canvas tab through migration", async () => {
+    const entry = {
+      id: "canvas",
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: { kind: "canvas", id: "canvas:plan", name: "plan", title: "Plan" },
+    } as const;
+    const { storage, name } = useClosedViewStore.persist.getOptions();
+    await storage!.setItem(name!, { state: { entries: [entry] }, version: 1 });
+    await useClosedViewStore.persist.rehydrate();
+    expect(useClosedViewStore.getState().entries).toEqual([entry]);
+  });
+
   it("keeps private tabs available in memory without saving their metadata", async () => {
     const store = useClosedViewStore.getState();
     const publicId = store.remember(diff(refA));

@@ -35,6 +35,7 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+const CanvasSurface = lazy(() => import("../../canvas/CanvasSurface"));
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -234,6 +235,16 @@ export function RightPanelSurfaceContent(props: {
               props.onCloseSurface(surface);
               useRightPanelStore.getState().show(threadRef);
             }}
+          />
+        </Suspense>
+      );
+    case "canvas":
+      return (
+        <Suspense fallback={null}>
+          <CanvasSurface
+            key={`${scopedThreadKey(threadRef)}:${surface.id}`}
+            threadRef={threadRef}
+            name={surface.name}
           />
         </Suspense>
       );

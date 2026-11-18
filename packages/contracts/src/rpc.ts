@@ -17,6 +17,28 @@ import {
   McpAppUpdateModelContextInput,
 } from "./mcpApps.ts";
 import {
+  CanvasCallInput,
+  CanvasCallResult,
+  CanvasError,
+  CanvasLibraryEntry,
+  CanvasLibraryListInput,
+  CanvasLibraryListResult,
+  CanvasLibraryOpenInput,
+  CanvasLibraryRemoveInput,
+  CanvasLibrarySaveInput,
+  CanvasLogInput,
+  CanvasSendEventInput,
+  CanvasSendEventResult,
+  CanvasSetStateInput,
+  CanvasSetStateResult,
+  CanvasSnapshot,
+  CanvasStreamItem,
+  CanvasSubscribeInput,
+  CanvasTrustFunctionsInput,
+  CanvasUrlInput,
+  CanvasUrlResult,
+} from "./canvas.ts";
+import {
   PeerLink,
   PeerLinkCreateInput,
   PeerLinkError,
@@ -466,6 +488,17 @@ export const WS_METHODS = {
   mcpAppsReadResource: "mcpApps.readResource",
   mcpAppsUpdateModelContext: "mcpApps.updateModelContext",
 
+  canvasUrl: "canvas.url",
+  canvasSetState: "canvas.setState",
+  canvasSendEvent: "canvas.sendEvent",
+  canvasCall: "canvas.call",
+  canvasLog: "canvas.log",
+  canvasTrustFunctions: "canvas.trustFunctions",
+  canvasLibraryList: "canvas.library.list",
+  canvasLibrarySave: "canvas.library.save",
+  canvasLibraryOpen: "canvas.library.open",
+  canvasLibraryRemove: "canvas.library.remove",
+
   providerUploadFeedback: "provider.uploadFeedback",
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
@@ -664,6 +697,7 @@ export const WS_METHODS = {
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
   subscribeDeviceState: "subscribeDeviceState",
+  subscribeCanvases: "subscribeCanvases",
   subscribeServerConfig: "subscribeServerConfig",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
@@ -1647,6 +1681,73 @@ const WsMcpAppsReadResourceRpc = Rpc.make(WS_METHODS.mcpAppsReadResource, {
   error: Schema.Union([McpAppRequestError, EnvironmentAuthorizationError]),
 });
 
+const canvasRpcError = Schema.Union([CanvasError, EnvironmentAuthorizationError]);
+
+const WsCanvasUrlRpc = Rpc.make(WS_METHODS.canvasUrl, {
+  payload: CanvasUrlInput,
+  success: CanvasUrlResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasSetStateRpc = Rpc.make(WS_METHODS.canvasSetState, {
+  payload: CanvasSetStateInput,
+  success: CanvasSetStateResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasSendEventRpc = Rpc.make(WS_METHODS.canvasSendEvent, {
+  payload: CanvasSendEventInput,
+  success: CanvasSendEventResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasCallRpc = Rpc.make(WS_METHODS.canvasCall, {
+  payload: CanvasCallInput,
+  success: CanvasCallResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasLogRpc = Rpc.make(WS_METHODS.canvasLog, {
+  payload: CanvasLogInput,
+  error: canvasRpcError,
+});
+
+const WsCanvasTrustFunctionsRpc = Rpc.make(WS_METHODS.canvasTrustFunctions, {
+  payload: CanvasTrustFunctionsInput,
+  success: CanvasSnapshot,
+  error: canvasRpcError,
+});
+
+const WsCanvasLibraryListRpc = Rpc.make(WS_METHODS.canvasLibraryList, {
+  payload: CanvasLibraryListInput,
+  success: CanvasLibraryListResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasLibrarySaveRpc = Rpc.make(WS_METHODS.canvasLibrarySave, {
+  payload: CanvasLibrarySaveInput,
+  success: CanvasLibraryEntry,
+  error: canvasRpcError,
+});
+
+const WsCanvasLibraryOpenRpc = Rpc.make(WS_METHODS.canvasLibraryOpen, {
+  payload: CanvasLibraryOpenInput,
+  success: CanvasSnapshot,
+  error: canvasRpcError,
+});
+
+const WsCanvasLibraryRemoveRpc = Rpc.make(WS_METHODS.canvasLibraryRemove, {
+  payload: CanvasLibraryRemoveInput,
+  error: canvasRpcError,
+});
+
+const WsSubscribeCanvasesRpc = Rpc.make(WS_METHODS.subscribeCanvases, {
+  payload: CanvasSubscribeInput,
+  success: CanvasStreamItem,
+  error: canvasRpcError,
+  stream: true,
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -2403,6 +2504,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsMcpAppsToolInfoRpc,
   WsMcpAppsReadResourceRpc,
   WsMcpAppsUpdateModelContextRpc,
+  WsCanvasUrlRpc,
+  WsCanvasSetStateRpc,
+  WsCanvasSendEventRpc,
+  WsCanvasCallRpc,
+  WsCanvasLogRpc,
+  WsCanvasTrustFunctionsRpc,
+  WsCanvasLibraryListRpc,
+  WsCanvasLibrarySaveRpc,
+  WsCanvasLibraryOpenRpc,
+  WsCanvasLibraryRemoveRpc,
+  WsSubscribeCanvasesRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   WsSubscribeVcsBranchRpc,

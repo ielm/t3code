@@ -8,6 +8,10 @@ import * as Layer from "effect/Layer";
 import { McpServer } from "effect/ai";
 
 import { AssetSigner } from "../assets/AssetSigner.ts";
+import { CanvasDiagnostics } from "../canvas/CanvasDiagnostics.ts";
+import { CanvasLibrary } from "../canvas/CanvasLibrary.ts";
+import { CanvasScreenshot } from "../canvas/CanvasScreenshot.ts";
+import { CanvasService } from "../canvas/CanvasService.ts";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
 import { ServerConfig } from "../config.ts";
 import { DeviceService } from "../device/DeviceService.ts";
@@ -53,6 +57,10 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
   Layer.mock(AssetSigner)({}),
+  Layer.mock(CanvasDiagnostics)({}),
+  Layer.mock(CanvasLibrary)({}),
+  Layer.mock(CanvasScreenshot)({}),
+  Layer.mock(CanvasService)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),
   Layer.mock(EnvironmentThemeService)({}),

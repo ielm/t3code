@@ -79,6 +79,7 @@ export type T3McpToolSummaryAction =
   | "device"
   | "html-preview"
   | "html-render"
+  | "canvas"
   | "send-to-user";
 
 export interface T3McpToolDefinition {
@@ -396,6 +397,12 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_thread_send_attachments: tool(["Send", "Sending", "Sent", "attachments"], "attachment-send"),
   html_preview: tool(["Preview", "Previewing", "Previewed", "an HTML page"], "html-preview"),
   html_render: tool(["Render", "Rendering", "Rendered", "an HTML page"], "html-render"),
+  canvas_open: tool(["Open", "Opening", "Opened", "a canvas"], "canvas"),
+  canvas_state: tool(["Update", "Updating", "Updated", "a canvas"], "canvas"),
+  canvas_read: tool(["Read", "Reading", "Read", "a canvas"], "canvas"),
+  canvas_wait: tool(["Wait", "Waiting", "Waited", "for a canvas action"], "canvas"),
+  canvas_save: tool(["Save", "Saving", "Saved", "a canvas"], "canvas"),
+  canvas_close: tool(["Close", "Closing", "Closed", "a canvas"], "canvas"),
   send_to_user: tool(["Send", "Sending", "Sent", "a message"], "send-to-user"),
 };
 

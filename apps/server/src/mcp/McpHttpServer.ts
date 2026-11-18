@@ -88,6 +88,12 @@ import {
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
+import * as CanvasHandlers from "./toolkits/canvas/handlers.ts";
+import {
+  CanvasReadTool,
+  CanvasReadToolkit,
+  CanvasStandardToolkit,
+} from "./toolkits/canvas/tools.ts";
 import { MessageToolkit } from "./toolkits/message/tools.ts";
 import * as MessageHandlers from "./toolkits/message/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
@@ -844,7 +850,16 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
           Effect.matchCauseEffect({
             onFailure: imageToolFailure(tool.name, operation, failureText),
             onSuccess: ({ encodedResult }) => {
-              const { screenshot, ...rest } = encodedResult as ImageToolResult;
+              const { screenshot, ...rest } = encodedResult as Partial<ImageToolResult>;
+              if (screenshot === undefined) {
+                return Effect.succeed(
+                  new McpSchema.CallToolResult({
+                    isError: false,
+                    structuredContent: rest,
+                    content: [{ type: "text", text: JSON.stringify(rest) }],
+                  }),
+                );
+              }
               const metadata = {
                 ...rest,
                 screenshot: {
@@ -927,6 +942,27 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
       isOrchestratorMcpFailure(error) || AiError.isAiError(error)
         ? error.message
         : "HTML preview failed.",
+  );
+});
+
+const registerCanvasRead = Effect.fn("McpHttpServer.registerCanvasRead")(function* () {
+  const services =
+    yield* Effect.context<
+      Exclude<Tool.Requirements<typeof CanvasReadTool>, McpInvocationContext.McpInvocationContext>
+    >();
+  const built = yield* decodeAsAdvertised(CanvasReadToolkit);
+  yield* registerImageTool(
+    CanvasReadTool,
+    (payload) =>
+      built
+        .handle("canvas_read", payload)
+        .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
+    (effect) => Effect.provide(effect, services),
+    "read",
+    (error) =>
+      isOrchestratorMcpFailure(error) || AiError.isAiError(error)
+        ? error.message
+        : "Canvas read failed.",
   );
 });
 
@@ -1239,6 +1275,10 @@ export const layerHtmlToolkit = Layer.mergeAll(
   toolkitRegistration(HtmlRenderToolkit, HtmlHandlers.layerRender),
   imageToolRegistration(registerHtmlPreview(), HtmlHandlers.layerPreview),
 ).pipe(Layer.provide(HtmlRender.layer));
+const layerCanvasToolkit = Layer.mergeAll(
+  toolkitRegistration(CanvasStandardToolkit, CanvasHandlers.layerStandard),
+  imageToolRegistration(registerCanvasRead(), CanvasHandlers.layerRead),
+);
 
 const layerPreviewStandardToolkitRegistration = toolkitRegistration(
   PreviewStandardToolkit,
@@ -1357,6 +1397,7 @@ export const layerTools = Layer.mergeAll(
   layerIssuesToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  layerCanvasToolkit,
   layerMessageToolkit,
 );
 

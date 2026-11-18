@@ -45,6 +45,7 @@ import {
   FileDiff,
   Files,
   Globe2,
+  LayoutDashboard,
   MessagesSquare,
   Plus,
   TerminalSquare,
@@ -110,6 +111,8 @@ import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
 import { surfaceShortcutKey } from "~/lib/surfaceShortcutKey";
+import { CanvasLauncherGroup } from "~/canvas/CanvasLauncherGroup";
+import { type CanvasTabMenuAction, useCanvasTabMenu } from "~/canvas/useCanvasTabMenu";
 
 export interface RightPanelTabsProps {
   mode: PreviewPanelMode;
@@ -217,6 +220,7 @@ type TabContextMenuAction =
   | "rename"
   | "copy-path"
   | "toggle-mute"
+  | CanvasTabMenuAction
   | "close"
   | "close-others"
   | "close-to-right"
@@ -568,6 +572,7 @@ function RightPanelEmptyState(props: {
             ),
           )}
         </div>
+        <CanvasLauncherGroup variant="list" />
       </div>
     </div>
   );
@@ -603,6 +608,8 @@ function surfaceTitle(
       return surface.title ?? surface.target?.name ?? "Device";
     case "side-chat":
       return "Side chat";
+    case "canvas":
+      return surface.title ?? surface.name;
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -695,6 +702,8 @@ function SurfaceIcon({
       return <IssueSurfaceIcon surface={surface} environmentId={environmentId} />;
     case "side-chat":
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
+    case "canvas":
+      return <LayoutDashboard className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -1077,6 +1086,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   const addSurfaceTriggerRef = useRef<HTMLButtonElement>(null);
   const [renamingDevice, setRenamingDevice] = useState<string | null>(null);
   const [addSurfaceMenuOpen, setAddSurfaceMenuOpen] = useState(false);
+  const canvasTabMenu = useCanvasTabMenu();
   const [tabScrollState, setTabScrollState] = useState({
     hasOverflow: false,
     canScrollLeft: false,
@@ -1244,6 +1254,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         }),
       });
     }
+    items.push(...canvasTabMenu.items(surface));
     items.push(
       { id: "close", label: "Close" },
       {
@@ -1264,6 +1275,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     );
 
     const action = await api.contextMenu.show(items, { x: event.clientX, y: event.clientY });
+    if (canvasTabMenu.handles(action)) return canvasTabMenu.run(surface, action);
     switch (action) {
       case "rename":
         setRenamingDevice(surface.id);
@@ -1518,6 +1530,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                       </SurfaceMenuItem>
                     );
                   })}
+                  <CanvasLauncherGroup variant="menu" />
                 </MenuPopup>
               </Menu>
             ) : null}
@@ -1605,6 +1618,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           props.children
         )}
       </div>
+      {canvasTabMenu.dialog}
     </PreviewPanelShell>
   );
 }

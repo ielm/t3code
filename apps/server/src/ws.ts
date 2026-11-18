@@ -120,6 +120,11 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
+import * as CanvasDiagnostics from "./canvas/CanvasDiagnostics.ts";
+import * as CanvasFunctions from "./canvas/CanvasFunctions.ts";
+import * as CanvasHttp from "./canvas/CanvasHttp.ts";
+import * as CanvasLibrary from "./canvas/CanvasLibrary.ts";
+import * as CanvasService from "./canvas/CanvasService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
@@ -1457,6 +1462,11 @@ export const layerWsRpc = (
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const mcpAppRequests = yield* McpAppRequests.McpAppRequests;
+      const canvasService = yield* CanvasService.CanvasService;
+      const canvasFunctions = yield* CanvasFunctions.CanvasFunctions;
+      const canvasDiagnostics = yield* CanvasDiagnostics.CanvasDiagnostics;
+      const canvasHttp = yield* CanvasHttp.CanvasHttp;
+      const canvasLibrary = yield* CanvasLibrary.CanvasLibrary;
       const analytics = yield* AnalyticsService.AnalyticsService;
       const originProps = clientAnalyticsProps;
       const recordClientCommandAnalytics = (command: OrchestrationV2Command) => {
@@ -2568,6 +2578,34 @@ export const layerWsRpc = (
         [WS_METHODS.mcpAppsToolInfo]: (input) => mcpAppRequests.toolInfo(input),
         [WS_METHODS.mcpAppsUpdateModelContext]: (input) => mcpAppRequests.updateModelContext(input),
         [WS_METHODS.mcpAppsReadResource]: (input) => mcpAppRequests.readResource(input),
+        [WS_METHODS.canvasUrl]: (input) => canvasHttp.mintUrl(input),
+        [WS_METHODS.canvasSetState]: (input) =>
+          canvasService
+            .patchState(input)
+            .pipe(Effect.map(({ stateRevision }) => ({ stateRevision }))),
+        [WS_METHODS.canvasSendEvent]: (input) => canvasService.submitEvent(input),
+        [WS_METHODS.canvasCall]: (input) =>
+          canvasFunctions.call(input).pipe(Effect.map((value) => ({ value }))),
+        [WS_METHODS.canvasLog]: (input) => canvasDiagnostics.record(input),
+        [WS_METHODS.canvasTrustFunctions]: (input) => canvasService.trustFunctions(input),
+        [WS_METHODS.canvasLibraryList]: (input) =>
+          canvasLibrary
+            .list(input)
+            .pipe(Effect.map((entries) => ({ entries: entries.map(CanvasLibrary.toWireEntry) }))),
+        [WS_METHODS.canvasLibrarySave]: (input) =>
+          canvasLibrary
+            .save(input)
+            .pipe(
+              Effect.map(CanvasLibrary.toWireEntry),
+              Effect.mapError(CanvasLibrary.toCanvasError),
+            ),
+        [WS_METHODS.canvasLibraryOpen]: (input) =>
+          canvasService.openFrom(input).pipe(
+            Effect.map(({ snapshot }) => snapshot),
+            Effect.mapError(CanvasLibrary.toCanvasError),
+          ),
+        [WS_METHODS.canvasLibraryRemove]: (input) => canvasLibrary.remove(input),
+        [WS_METHODS.subscribeCanvases]: (input) => canvasService.stream(input.threadId),
         [WS_METHODS.providerUploadFeedback]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(
