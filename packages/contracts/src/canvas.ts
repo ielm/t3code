@@ -192,10 +192,19 @@ export type CanvasCallInput = typeof CanvasCallInput.Type;
 export const CanvasCallResult = Schema.Struct({ value: Schema.Unknown });
 export type CanvasCallResult = typeof CanvasCallResult.Type;
 
+export const CanvasLogInput = Schema.Struct({
+  ...CanvasTarget,
+  pageRevision: NonNegativeInt,
+  level: Schema.Literals(["error", "warning"]),
+  text: Schema.String.check(Schema.isMaxLength(2000)),
+});
+export type CanvasLogInput = typeof CanvasLogInput.Type;
+
 export const CanvasErrorReason = Schema.Literals([
   "not-found",
   "too-many-canvases",
   "invalid-path",
+  "invalid-origin",
   "state-too-large",
   "event-too-large",
   "rate-limited",
@@ -227,6 +236,8 @@ export class CanvasError extends Schema.TaggedError<CanvasError>()("CanvasError"
         return `A thread can have at most ${CANVAS_MAX_PER_THREAD} canvases. Close one first.`;
       case "invalid-path":
         return "That path is outside the canvas folder.";
+      case "invalid-origin":
+        return "The canvas cannot be served to that origin.";
       case "state-too-large":
         return `Canvas state is limited to ${CANVAS_STATE_MAX_BYTES} bytes of JSON.`;
       case "event-too-large":

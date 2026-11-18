@@ -124,8 +124,8 @@ describe("CanvasHttp", () => {
           Effect.map((error) => error.reason),
         );
       expect(yield* reason({ name: "absent", origin })).toBe("not-found");
-      expect(yield* reason({ name, origin: "https://a.test;script-src*" })).toBe("invalid-path");
-      expect(yield* reason({ name, origin: "https://a.test,default-src*" })).toBe("invalid-path");
+      expect(yield* reason({ name, origin: "https://a.test;script-src*" })).toBe("invalid-origin");
+      expect(yield* reason({ name, origin: "https://a.test,default-src*" })).toBe("invalid-origin");
     }).pipe(Effect.provide(layerTest)),
   );
 

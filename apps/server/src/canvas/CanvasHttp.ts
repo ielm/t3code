@@ -181,7 +181,7 @@ const make = Effect.gen(function* () {
     const origin = cspOrigin(input.origin);
     if (origin === null) {
       return yield* new CanvasError({
-        reason: "invalid-path",
+        reason: "invalid-origin",
         canvas: input.name,
         detail: "The client origin is not a plain http or https origin.",
       });

@@ -17,6 +17,20 @@ import {
   McpAppUpdateModelContextInput,
 } from "./mcpApps.ts";
 import {
+  CanvasCallInput,
+  CanvasCallResult,
+  CanvasError,
+  CanvasLogInput,
+  CanvasSendEventInput,
+  CanvasSendEventResult,
+  CanvasSetStateInput,
+  CanvasSetStateResult,
+  CanvasStreamItem,
+  CanvasSubscribeInput,
+  CanvasUrlInput,
+  CanvasUrlResult,
+} from "./canvas.ts";
+import {
   PeerLink,
   PeerLinkCreateInput,
   PeerLinkError,
@@ -466,6 +480,12 @@ export const WS_METHODS = {
   mcpAppsReadResource: "mcpApps.readResource",
   mcpAppsUpdateModelContext: "mcpApps.updateModelContext",
 
+  canvasUrl: "canvas.url",
+  canvasSetState: "canvas.setState",
+  canvasSendEvent: "canvas.sendEvent",
+  canvasCall: "canvas.call",
+  canvasLog: "canvas.log",
+
   providerUploadFeedback: "provider.uploadFeedback",
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
@@ -664,6 +684,7 @@ export const WS_METHODS = {
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
   subscribeDeviceState: "subscribeDeviceState",
+  subscribeCanvases: "subscribeCanvases",
   subscribeServerConfig: "subscribeServerConfig",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
@@ -1647,6 +1668,44 @@ const WsMcpAppsReadResourceRpc = Rpc.make(WS_METHODS.mcpAppsReadResource, {
   error: Schema.Union([McpAppRequestError, EnvironmentAuthorizationError]),
 });
 
+const canvasRpcError = Schema.Union([CanvasError, EnvironmentAuthorizationError]);
+
+const WsCanvasUrlRpc = Rpc.make(WS_METHODS.canvasUrl, {
+  payload: CanvasUrlInput,
+  success: CanvasUrlResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasSetStateRpc = Rpc.make(WS_METHODS.canvasSetState, {
+  payload: CanvasSetStateInput,
+  success: CanvasSetStateResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasSendEventRpc = Rpc.make(WS_METHODS.canvasSendEvent, {
+  payload: CanvasSendEventInput,
+  success: CanvasSendEventResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasCallRpc = Rpc.make(WS_METHODS.canvasCall, {
+  payload: CanvasCallInput,
+  success: CanvasCallResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasLogRpc = Rpc.make(WS_METHODS.canvasLog, {
+  payload: CanvasLogInput,
+  error: canvasRpcError,
+});
+
+const WsSubscribeCanvasesRpc = Rpc.make(WS_METHODS.subscribeCanvases, {
+  payload: CanvasSubscribeInput,
+  success: CanvasStreamItem,
+  error: canvasRpcError,
+  stream: true,
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -2403,6 +2462,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsMcpAppsToolInfoRpc,
   WsMcpAppsReadResourceRpc,
   WsMcpAppsUpdateModelContextRpc,
+  WsCanvasUrlRpc,
+  WsCanvasSetStateRpc,
+  WsCanvasSendEventRpc,
+  WsCanvasCallRpc,
+  WsCanvasLogRpc,
+  WsSubscribeCanvasesRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   WsSubscribeVcsBranchRpc,
