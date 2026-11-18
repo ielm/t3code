@@ -200,11 +200,57 @@ export const CanvasLogInput = Schema.Struct({
 });
 export type CanvasLogInput = typeof CanvasLogInput.Type;
 
+export const CanvasLibraryScope = Schema.Literals(["project", "personal"]);
+export type CanvasLibraryScope = typeof CanvasLibraryScope.Type;
+
+/** A saved canvas: a folder in the project's `.canvases` or in the personal library. */
+export const CanvasLibraryEntry = Schema.Struct({
+  scope: CanvasLibraryScope,
+  name: CanvasName,
+  title: Schema.String,
+  description: Schema.NullOr(Schema.String),
+});
+export type CanvasLibraryEntry = typeof CanvasLibraryEntry.Type;
+
+export const CanvasLibraryListInput = Schema.Struct({ threadId: ThreadId });
+export type CanvasLibraryListInput = typeof CanvasLibraryListInput.Type;
+
+export const CanvasLibraryListResult = Schema.Struct({
+  entries: Schema.Array(CanvasLibraryEntry),
+});
+export type CanvasLibraryListResult = typeof CanvasLibraryListResult.Type;
+
+/** Copies a thread canvas into a library. State is never saved. */
+export const CanvasLibrarySaveInput = Schema.Struct({
+  ...CanvasTarget,
+  to: CanvasLibraryScope,
+  as: Schema.optional(CanvasName),
+  overwrite: Schema.optional(Schema.Boolean),
+});
+export type CanvasLibrarySaveInput = typeof CanvasLibrarySaveInput.Type;
+
+/** Creates a thread canvas from a saved one, with fresh state, and shows it. */
+export const CanvasLibraryOpenInput = Schema.Struct({
+  threadId: ThreadId,
+  scope: CanvasLibraryScope,
+  name: CanvasName,
+  as: Schema.optional(CanvasName),
+});
+export type CanvasLibraryOpenInput = typeof CanvasLibraryOpenInput.Type;
+
+export const CanvasLibraryRemoveInput = Schema.Struct({
+  threadId: ThreadId,
+  scope: CanvasLibraryScope,
+  name: CanvasName,
+});
+export type CanvasLibraryRemoveInput = typeof CanvasLibraryRemoveInput.Type;
+
 export const CanvasErrorReason = Schema.Literals([
   "not-found",
   "too-many-canvases",
   "invalid-path",
   "invalid-origin",
+  "already-exists",
   "state-too-large",
   "event-too-large",
   "rate-limited",
@@ -236,6 +282,8 @@ export class CanvasError extends Schema.TaggedError<CanvasError>()("CanvasError"
         return `A thread can have at most ${CANVAS_MAX_PER_THREAD} canvases. Close one first.`;
       case "invalid-path":
         return "That path is outside the canvas folder.";
+      case "already-exists":
+        return "A canvas with that name already exists there.";
       case "invalid-origin":
         return "The canvas cannot be served to that origin.";
       case "state-too-large":

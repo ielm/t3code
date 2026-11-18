@@ -20,11 +20,18 @@ import {
   CanvasCallInput,
   CanvasCallResult,
   CanvasError,
+  CanvasLibraryEntry,
+  CanvasLibraryListInput,
+  CanvasLibraryListResult,
+  CanvasLibraryOpenInput,
+  CanvasLibraryRemoveInput,
+  CanvasLibrarySaveInput,
   CanvasLogInput,
   CanvasSendEventInput,
   CanvasSendEventResult,
   CanvasSetStateInput,
   CanvasSetStateResult,
+  CanvasSnapshot,
   CanvasStreamItem,
   CanvasSubscribeInput,
   CanvasUrlInput,
@@ -485,6 +492,10 @@ export const WS_METHODS = {
   canvasSendEvent: "canvas.sendEvent",
   canvasCall: "canvas.call",
   canvasLog: "canvas.log",
+  canvasLibraryList: "canvas.library.list",
+  canvasLibrarySave: "canvas.library.save",
+  canvasLibraryOpen: "canvas.library.open",
+  canvasLibraryRemove: "canvas.library.remove",
 
   providerUploadFeedback: "provider.uploadFeedback",
   providerAuthStart: "provider.auth.start",
@@ -1699,6 +1710,29 @@ const WsCanvasLogRpc = Rpc.make(WS_METHODS.canvasLog, {
   error: canvasRpcError,
 });
 
+const WsCanvasLibraryListRpc = Rpc.make(WS_METHODS.canvasLibraryList, {
+  payload: CanvasLibraryListInput,
+  success: CanvasLibraryListResult,
+  error: canvasRpcError,
+});
+
+const WsCanvasLibrarySaveRpc = Rpc.make(WS_METHODS.canvasLibrarySave, {
+  payload: CanvasLibrarySaveInput,
+  success: CanvasLibraryEntry,
+  error: canvasRpcError,
+});
+
+const WsCanvasLibraryOpenRpc = Rpc.make(WS_METHODS.canvasLibraryOpen, {
+  payload: CanvasLibraryOpenInput,
+  success: CanvasSnapshot,
+  error: canvasRpcError,
+});
+
+const WsCanvasLibraryRemoveRpc = Rpc.make(WS_METHODS.canvasLibraryRemove, {
+  payload: CanvasLibraryRemoveInput,
+  error: canvasRpcError,
+});
+
 const WsSubscribeCanvasesRpc = Rpc.make(WS_METHODS.subscribeCanvases, {
   payload: CanvasSubscribeInput,
   success: CanvasStreamItem,
@@ -2467,6 +2501,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsCanvasSendEventRpc,
   WsCanvasCallRpc,
   WsCanvasLogRpc,
+  WsCanvasLibraryListRpc,
+  WsCanvasLibrarySaveRpc,
+  WsCanvasLibraryOpenRpc,
+  WsCanvasLibraryRemoveRpc,
   WsSubscribeCanvasesRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
