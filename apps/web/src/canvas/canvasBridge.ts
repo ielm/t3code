@@ -7,7 +7,7 @@ import {
 } from "@t3tools/shared/canvas";
 import * as Option from "effect/Option";
 
-export const CANVAS_PAGE_REVISION_PARAM = "pageRevision";
+const CANVAS_PAGE_REVISION_PARAM = "pageRevision";
 
 export type CanvasCallOutcome =
   | { readonly ok: true; readonly value: unknown }

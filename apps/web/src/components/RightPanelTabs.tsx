@@ -45,6 +45,7 @@ import {
   FileDiff,
   Files,
   Globe2,
+  LayoutDashboard,
   MessagesSquare,
   Plus,
   TerminalSquare,
@@ -603,6 +604,8 @@ function surfaceTitle(
       return surface.title ?? surface.target?.name ?? "Device";
     case "side-chat":
       return "Side chat";
+    case "canvas":
+      return surface.title ?? surface.name;
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -695,6 +698,8 @@ function SurfaceIcon({
       return <IssueSurfaceIcon surface={surface} environmentId={environmentId} />;
     case "side-chat":
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
+    case "canvas":
+      return <LayoutDashboard className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />

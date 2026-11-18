@@ -7,6 +7,7 @@ import { EnvironmentId, RunId, ThreadId, type ScopedThreadRef } from "@t3tools/c
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { type CanvasTabTarget, openCanvasTab, reconcileCanvasTabs } from "./canvas/canvasTabs";
 import { useClosedViewStore } from "./closedViewStore";
 import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
@@ -23,6 +24,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-requests",
   "issue",
   "side-chat",
+  "canvas",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -94,6 +96,7 @@ export type RightPanelSurface =
       key: string;
       url?: string;
     }
+  | { id: `canvas:${string}`; kind: "canvas"; name: string; title?: string }
   | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
@@ -152,9 +155,14 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "issue" | "side-chat">,
+    kind: Exclude<
+      RightPanelKind,
+      "file" | "terminal" | "pull-request" | "issue" | "side-chat" | "canvas"
+    >,
   ) => void;
   openSideChat: (ref: ScopedThreadRef, threadId: ThreadId) => void;
+  openCanvas: (ref: ScopedThreadRef, target: CanvasTabTarget, byAgent?: "show" | "quiet") => void;
+  reconcileCanvasSurfaces: (ref: ScopedThreadRef, titles: ReadonlyMap<string, string>) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
@@ -219,7 +227,10 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "issue" | "side-chat">,
+    kind: Exclude<
+      RightPanelKind,
+      "file" | "terminal" | "pull-request" | "issue" | "side-chat" | "canvas"
+    >,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -244,7 +255,7 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 const singletonSurface = (
   kind: Exclude<
     RightPanelKind,
-    "file" | "preview" | "terminal" | "pull-request" | "issue" | "side-chat"
+    "file" | "preview" | "terminal" | "pull-request" | "issue" | "side-chat" | "canvas"
   >,
 ): RightPanelSurface => {
   switch (kind) {
@@ -818,6 +829,18 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) =>
             upsertSurface(current, { id: `side-chat:${threadId}`, kind: "side-chat", threadId }),
+          ),
+        ),
+      openCanvas: (ref, target, byAgent) =>
+        set((state) =>
+          (byAgent ? automaticUpdate : userAction)(state, scopedThreadKey(ref), (current) =>
+            openCanvasTab(current, target, byAgent !== "quiet"),
+          ),
+        ),
+      reconcileCanvasSurfaces: (ref, titles) =>
+        set((state) =>
+          automaticUpdate(state, scopedThreadKey(ref), (current) =>
+            reconcileCanvasTabs(current, titles),
           ),
         ),
       renameDevice: (ref, surfaceId, title) =>
