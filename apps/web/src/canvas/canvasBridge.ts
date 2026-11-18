@@ -31,6 +31,55 @@ export interface CanvasLogInput {
   readonly text: string;
 }
 
+/** What the panel's own window reports as a page message arrives. The page supplies none of it. */
+export interface CanvasGestureSample {
+  /** `navigator.userActivation.isActive`: input somewhere in the app window in the last seconds. */
+  readonly active: boolean;
+  /** Focus is inside the canvas frame, so that input went to the canvas. */
+  readonly focused: boolean;
+  /** Monotonic milliseconds, as `performance.now()` gives. */
+  readonly now: number;
+}
+
+/**
+ * Above the five seconds transient activation lasts in Chromium, Firefox and WebKit. Activation
+ * still reported this long after an accepted action must come from input newer than that action.
+ */
+export const CANVAS_GESTURE_REARM_MS = 5_500;
+
+type CanvasGestureVerdict = "accepted" | "no-gesture" | "spent";
+
+/**
+ * Lets one click or key press in a canvas pay for one privileged action: an event, a `change`
+ * function call or a link. A window shows only whether it saw input recently, not which input, so
+ * after an action is accepted the next waits until activation is seen to lapse or has outlived
+ * `CANVAS_GESTURE_REARM_MS`. A second press sooner than that is refused with the first.
+ */
+export function createCanvasGestureGate() {
+  let acceptedAt: number | undefined;
+  const observe = (sample: CanvasGestureSample): void => {
+    if (!sample.active) acceptedAt = undefined;
+  };
+  return {
+    /** Every page message is a chance to see that the accepted press has lapsed. */
+    observe,
+    take(sample: CanvasGestureSample): CanvasGestureVerdict {
+      observe(sample);
+      if (!sample.active || !sample.focused) return "no-gesture";
+      if (acceptedAt !== undefined && sample.now - acceptedAt < CANVAS_GESTURE_REARM_MS) {
+        return "spent";
+      }
+      acceptedAt = sample.now;
+      return "accepted";
+    },
+  };
+}
+
+const droppedEventText = (event: string, verdict: Exclude<CanvasGestureVerdict, "accepted">) =>
+  verdict === "spent"
+    ? `Event "${event}" was not sent: the same click or key press already sent an event, ran a change function or opened a link. One press does one of those.`
+    : `Event "${event}" was not sent: canvas.send only works from the user's click or key press in the canvas.`;
+
 export type CanvasBridgeAction =
   | { readonly type: "post"; readonly message: CanvasHostMessage }
   | { readonly type: "setState"; readonly patch: CanvasStatePatch }
@@ -101,15 +150,16 @@ const stateMessage = (snapshot: CanvasSnapshot): CanvasHostMessage => ({
  * The host side of one mounted canvas frame. Each `ready` starts a new page: a page can reload
  * itself without a revision change, and its call ids then start over.
  */
-export function createCanvasBridge(pageRevision: number) {
+export function createCanvasBridge(pageRevision: number, gate = createCanvasGestureGate()) {
   let page = 0;
   let postedStateRevision: number | undefined;
 
   return {
     receive(
       message: CanvasPageMessage,
-      context: { readonly snapshot: CanvasSnapshot; readonly gesture: boolean },
+      context: { readonly snapshot: CanvasSnapshot; readonly gesture: CanvasGestureSample },
     ): CanvasBridgeAction {
+      gate.observe(context.gesture);
       switch (message.type) {
         case "ready": {
           page += 1;
@@ -130,7 +180,14 @@ export function createCanvasBridge(pageRevision: number) {
         }
         case "setState":
           return { type: "setState", patch: message.patch };
-        case "event":
+        case "event": {
+          const verdict = gate.take(context.gesture);
+          if (verdict !== "accepted") {
+            return {
+              type: "log",
+              input: { level: "warning", text: droppedEventText(message.event, verdict) },
+            };
+          }
           return {
             type: "event",
             input: {
@@ -139,15 +196,20 @@ export function createCanvasBridge(pageRevision: number) {
               pageRevision,
             },
           };
+        }
         case "call": {
           const caller = page;
           const { id } = message;
+          // Only a function this snapshot lists as `read` skips the gate; the server decides again.
+          const read = context.snapshot.functions.some(
+            (declared) => declared.name === message.function && declared.kind === "read",
+          );
           return {
             type: "call",
             input: {
               function: message.function,
               ...(message.args === undefined ? {} : { args: message.args }),
-              gesture: context.gesture,
+              gesture: !read && gate.take(context.gesture) === "accepted",
             },
             settle: (outcome) =>
               caller === page

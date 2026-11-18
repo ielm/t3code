@@ -69,6 +69,10 @@ export function createCanvasEnvironmentAtoms<R, E>(
       label: "environment-command:canvas:log",
       tag: WS_METHODS.canvasLog,
     }),
+    trustFunctions: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:canvas:trust-functions",
+      tag: WS_METHODS.canvasTrustFunctions,
+    }),
     libraryList: createEnvironmentRpcCommand(runtime, {
       label: "environment-command:canvas:library-list",
       tag: WS_METHODS.canvasLibraryList,

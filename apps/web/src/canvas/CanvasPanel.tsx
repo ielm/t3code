@@ -1,10 +1,11 @@
 import type { CanvasSnapshot, CanvasStatePatch } from "@t3tools/contracts";
 import type { CanvasHostMessage } from "@t3tools/shared/canvas";
 import { htmlRenderThemeFragment, htmlRenderThemeMessage } from "@t3tools/shared/htmlRender";
-import { TriangleAlertIcon } from "lucide-react";
+import { ShieldAlertIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 
-import { Alert, AlertDescription } from "~/components/ui/alert";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Button } from "~/components/ui/button";
 import { useHtmlRenderTheme } from "~/hooks/useHtmlRenderTheme";
 
 import {
@@ -17,7 +18,12 @@ import {
   type CanvasLinkRequest,
   type CanvasLogInput,
   createCanvasBridge,
+  createCanvasGestureGate,
 } from "./canvasBridge";
+
+// User activation belongs to the window, not to a frame, so every canvas frame shares one gate:
+// a page reloaded by a new revision or a renewed URL gets no second action from the same press.
+const windowGestureGate = createCanvasGestureGate();
 
 export interface CanvasPanelProps {
   readonly snapshot: CanvasSnapshot;
@@ -29,6 +35,8 @@ export interface CanvasPanelProps {
   readonly onLog: (input: CanvasLogInput) => void;
   /** Called only for a link the user clicked in the page. */
   readonly onOpenLink: (link: CanvasLinkRequest) => void;
+  /** Turns on a library canvas's functions; `null` when this session may not run commands. */
+  readonly onTrustFunctions: (() => Promise<void>) | null;
 }
 
 export function CanvasPanel(props: CanvasPanelProps) {
@@ -43,9 +51,16 @@ export function CanvasPanel(props: CanvasPanelProps) {
           </Alert>
         </div>
       )}
+      {snapshot.functionsBlocked === true ? (
+        <CanvasFunctionsNotice
+          functions={snapshot.functions}
+          onTrustFunctions={props.onTrustFunctions}
+        />
+      ) : null}
       {url === null ? null : (
         <CanvasFrame
-          key={`${snapshot.threadId}:${snapshot.name}:${snapshot.pageRevision}`}
+          // Enabling functions reloads the page, so calls it made while they were off run again.
+          key={`${snapshot.threadId}:${snapshot.name}:${snapshot.pageRevision}:${snapshot.functionsBlocked === true}`}
           {...props}
           url={url}
         />
@@ -54,12 +69,61 @@ export function CanvasPanel(props: CanvasPanelProps) {
   );
 }
 
-/** Keeps the first URL while mounted; a renewed URL must not reload the page. */
+function CanvasFunctionsNotice(props: {
+  readonly functions: CanvasSnapshot["functions"];
+  readonly onTrustFunctions: CanvasPanelProps["onTrustFunctions"];
+}) {
+  const { functions, onTrustFunctions } = props;
+  const [enabling, setEnabling] = useState(false);
+  return (
+    <div className="shrink-0 p-2">
+      <Alert variant="warning">
+        <ShieldAlertIcon />
+        <AlertTitle>This canvas's functions are off</AlertTitle>
+        <AlertDescription>
+          <p>
+            It came from the project library, so its commands came with the repository and not from
+            you or your agent. Enabling them lets this page run on the environment's machine:
+          </p>
+          <ul className="flex flex-col gap-0.5">
+            {functions.map((declared) => (
+              <li key={declared.name}>
+                <code className="font-mono">{declared.name}</code>{" "}
+                {declared.kind === "read"
+                  ? "(read: runs whenever the page asks)"
+                  : "(change: runs when you click or press a key in the canvas)"}
+              </li>
+            ))}
+          </ul>
+          {onTrustFunctions === null ? (
+            <p>This connection is not allowed to run commands, so it cannot enable them.</p>
+          ) : null}
+        </AlertDescription>
+        <AlertAction>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={onTrustFunctions === null || enabling}
+            onClick={() => {
+              if (onTrustFunctions === null) return;
+              setEnabling(true);
+              void onTrustFunctions().finally(() => setEnabling(false));
+            }}
+          >
+            Enable functions
+          </Button>
+        </AlertAction>
+      </Alert>
+    </div>
+  );
+}
+
+/** Keeps the first URL while mounted; the surface remounts the panel to load a renewed one. */
 function CanvasFrame(props: CanvasPanelProps & { readonly url: string }) {
   const { snapshot } = props;
   const theme = useHtmlRenderTheme();
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const [bridge] = useState(() => createCanvasBridge(snapshot.pageRevision));
+  const [bridge] = useState(() => createCanvasBridge(snapshot.pageRevision, windowGestureGate));
   const [src] = useState(() =>
     canvasFrameSrc(props.url, snapshot.pageRevision, htmlRenderThemeFragment(theme)),
   );
@@ -78,10 +142,14 @@ function CanvasFrame(props: CanvasPanelProps & { readonly url: string }) {
   const onFrameMessage = useEffectEvent((frame: HTMLIFrameElement, event: MessageEvent) => {
     // The page cannot claim a gesture: activation in the frame is visible here, and the focus
     // check excludes activation from input elsewhere in the app.
-    const gesture = navigator.userActivation?.isActive === true && document.activeElement === frame;
+    const gesture = {
+      active: navigator.userActivation?.isActive === true,
+      focused: document.activeElement === frame,
+      now: performance.now(),
+    };
     const link = acceptCanvasLinkRequest(event, frame.contentWindow, props.url);
     if (link !== undefined) {
-      if (gesture) props.onOpenLink(link);
+      if (windowGestureGate.take(gesture) === "accepted") props.onOpenLink(link);
       return;
     }
     const message = acceptCanvasPageMessage(event, frame.contentWindow);

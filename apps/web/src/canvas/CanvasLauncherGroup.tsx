@@ -75,6 +75,10 @@ function ThreadCanvasLauncherGroup(props: {
   const listLibrary = useAtomCommand(canvasEnvironment.libraryList, { reportFailure: false });
   const openSaved = useAtomCommand(canvasEnvironment.libraryOpen, { reportFailure: false });
   const removeSaved = useAtomCommand(canvasEnvironment.libraryRemove, { reportFailure: false });
+  const canOpenSaved = useAtomValue(canvasEnvironment.libraryOpen.permissionAtom(environmentId));
+  const canRemoveSaved = useAtomValue(
+    canvasEnvironment.libraryRemove.permissionAtom(environmentId),
+  );
   const [library, setLibrary] = useState<ReadonlyArray<CanvasLibraryEntry>>([]);
   const [busy, setBusy] = useState(false);
 
@@ -163,8 +167,14 @@ function ThreadCanvasLauncherGroup(props: {
                 <MenuItemDetail>{item.scopeLabel}</MenuItemDetail>
               </MenuSubTrigger>
               <MenuSubPopup>
-                <MenuItem onClick={() => open(item)}>Open</MenuItem>
-                <MenuItem variant="destructive" onClick={() => remove(item)}>
+                <MenuItem disabled={!canOpenSaved} onClick={() => open(item)}>
+                  Open
+                </MenuItem>
+                <MenuItem
+                  variant="destructive"
+                  disabled={!canRemoveSaved}
+                  onClick={() => remove(item)}
+                >
                   Remove from library
                 </MenuItem>
               </MenuSubPopup>
@@ -196,7 +206,7 @@ function ThreadCanvasLauncherGroup(props: {
             <button
               type="button"
               className={LIST_ROW_CLASS}
-              disabled={busy}
+              disabled={busy || !canOpenSaved}
               onClick={() => open(item)}
             >
               <LayoutDashboard className="size-4 shrink-0" />
@@ -208,7 +218,7 @@ function ThreadCanvasLauncherGroup(props: {
                 render={
                   <Button
                     aria-label={removeLabel}
-                    disabled={busy}
+                    disabled={busy || !canRemoveSaved}
                     size="icon-xs"
                     variant="ghost-muted"
                     onClick={() => remove(item)}

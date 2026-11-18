@@ -1,5 +1,7 @@
-/** A fresh URL is minted for a new page revision when the current one has less than this left. */
+/** A URL with less than this left is replaced by a fresh one. */
 export const CANVAS_URL_MIN_LIFE_MS = 60 * 60_000;
+/** How long a pending renewal waits between looks at the clock, and a failed one before retrying. */
+export const CANVAS_URL_RENEWAL_CHECK_MS = 60_000;
 
 /**
  * The scheme, host and port the client reaches an environment on. The server signs it into the
@@ -25,7 +27,6 @@ export interface MintedCanvasUrl {
   readonly expiresAt: number;
 }
 
-/** A mounted page keeps its URL, so this is asked once per page revision, not on a timer. */
 export function canvasUrlNeedsMint(
   minted: MintedCanvasUrl | null,
   origin: string,
@@ -33,4 +34,17 @@ export function canvasUrlNeedsMint(
 ): boolean {
   if (minted === null || minted.origin !== origin) return true;
   return !(minted.expiresAt - now > CANVAS_URL_MIN_LIFE_MS);
+}
+
+/**
+ * Milliseconds until `canvasUrlNeedsMint` is worth asking again for a mounted page, or `null` when
+ * the expiry is unknown. Capped because a timer stands still while the machine sleeps and the
+ * expiry does not.
+ */
+export function canvasUrlRenewalDelay(minted: MintedCanvasUrl, now: number): number | null {
+  if (Number.isNaN(minted.expiresAt)) return null;
+  const untilDue = minted.expiresAt - CANVAS_URL_MIN_LIFE_MS - now;
+  return untilDue > 0
+    ? Math.min(untilDue, CANVAS_URL_RENEWAL_CHECK_MS)
+    : CANVAS_URL_RENEWAL_CHECK_MS;
 }

@@ -10,12 +10,14 @@ import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
   AuthEnvironmentMaintainScope,
+  AuthFilesystemWriteScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
+  AuthTerminalOperateScope,
   ThreadId,
   EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
@@ -155,6 +157,11 @@ describe("command permissions", () => {
   it.effect.each([
     { method: WS_METHODS.serverRunStorageCleanup, scope: AuthSettingsWriteScope },
     { method: WS_METHODS.serverReclaimDatabaseSpace, scope: AuthEnvironmentMaintainScope },
+    { method: WS_METHODS.canvasCall, scope: AuthTerminalOperateScope },
+    { method: WS_METHODS.canvasTrustFunctions, scope: AuthTerminalOperateScope },
+    { method: WS_METHODS.canvasLibrarySave, scope: AuthFilesystemWriteScope },
+    { method: WS_METHODS.canvasLibraryOpen, scope: AuthFilesystemWriteScope },
+    { method: WS_METHODS.canvasLibraryRemove, scope: AuthFilesystemWriteScope },
   ])("requires the destination $scope grant for $method", ({ method, scope }) =>
     Effect.gen(function* () {
       const registry = yield* setup;

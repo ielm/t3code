@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { CanvasLibraryScope, ContextMenuItem } from "@t3tools/contracts";
 import { type ReactNode, useId, useState } from "react";
 
@@ -41,6 +42,11 @@ const CANVAS_TAB_MENU_ITEMS = [
 
 export type CanvasTabMenuAction = (typeof CANVAS_TAB_MENU_ITEMS)[number]["id"];
 
+const CANVAS_TAB_MENU_ITEMS_UNAVAILABLE = CANVAS_TAB_MENU_ITEMS.map((item) => ({
+  ...item,
+  disabled: true,
+}));
+
 const isCanvasTabMenuAction = (action: string | null): action is CanvasTabMenuAction =>
   CANVAS_TAB_MENU_ITEMS.some((item) => item.id === action);
 
@@ -73,6 +79,9 @@ export function useCanvasTabMenu(): {
 } {
   const threadRef = useCanvasThreadRef();
   const saveCommand = useAtomCommand(canvasEnvironment.librarySave, { reportFailure: false });
+  const canSave = useAtomValue(
+    canvasEnvironment.librarySave.permissionAtom(threadRef?.environmentId ?? null),
+  );
   const [saveAs, setSaveAs] = useState<CanvasSaveAsDraft | null>(null);
 
   const save = async (draft: CanvasSaveAsDraft, renamed: boolean) => {
@@ -90,11 +99,13 @@ export function useCanvasTabMenu(): {
   };
 
   return {
-    items: (surface) =>
-      surface.kind === "canvas" && threadRef !== null ? CANVAS_TAB_MENU_ITEMS : [],
+    items: (surface) => {
+      if (surface.kind !== "canvas" || threadRef === null) return [];
+      return canSave ? CANVAS_TAB_MENU_ITEMS : CANVAS_TAB_MENU_ITEMS_UNAVAILABLE;
+    },
     handles: isCanvasTabMenuAction,
     run: (surface, action) => {
-      if (surface.kind !== "canvas") return;
+      if (surface.kind !== "canvas" || !canSave) return;
       switch (action) {
         case "canvas-save-project":
           void save({ canvas: surface, as: surface.name, to: "project" }, false);

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   CANVAS_URL_MIN_LIFE_MS,
+  CANVAS_URL_RENEWAL_CHECK_MS,
   canvasClientOrigin,
   canvasUrlNeedsMint,
+  canvasUrlRenewalDelay,
   resolveCanvasUrl,
 } from "./canvasUrl";
 
@@ -56,5 +58,24 @@ describe("canvasUrlNeedsMint", () => {
     expect(canvasUrlNeedsMint(minted(now + CANVAS_URL_MIN_LIFE_MS), origin, now)).toBe(true);
     expect(canvasUrlNeedsMint(minted(now - 1), origin, now)).toBe(true);
     expect(canvasUrlNeedsMint(minted(Number.NaN), origin, now)).toBe(true);
+  });
+
+  it("is due for renewal exactly when the wait for it ends", () => {
+    const url = minted(now + CANVAS_URL_MIN_LIFE_MS + 30_000);
+    expect(canvasUrlRenewalDelay(url, now)).toBe(30_000);
+    expect(canvasUrlNeedsMint(url, origin, now + 30_000 - 1)).toBe(false);
+    expect(canvasUrlNeedsMint(url, origin, now + 30_000)).toBe(true);
+  });
+
+  it.each([
+    ["a far expiry is looked at again soon, in case the machine slept", 20 * 60 * 60_000],
+    ["a renewal already due is retried", CANVAS_URL_MIN_LIFE_MS - 1],
+    ["an expired URL is retried", -1],
+  ])("%s", (_name, life) => {
+    expect(canvasUrlRenewalDelay(minted(now + life), now)).toBe(CANVAS_URL_RENEWAL_CHECK_MS);
+  });
+
+  it("schedules nothing for an expiry that did not parse", () => {
+    expect(canvasUrlRenewalDelay(minted(Number.NaN), now)).toBeNull();
   });
 });

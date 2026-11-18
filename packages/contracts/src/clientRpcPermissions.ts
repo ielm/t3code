@@ -3,6 +3,7 @@ import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./gi
 import {
   AuthAccessWriteScope,
   AuthEnvironmentMaintainScope,
+  AuthFilesystemWriteScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -86,6 +87,12 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksUnlink]: AuthAccessWriteScope,
   // A link lets every agent here reach the other environment: Settings' bar.
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
+  // A canvas function is a command on the environment's machine, as a terminal's are.
+  [WS_METHODS.canvasCall]: AuthTerminalOperateScope,
+  [WS_METHODS.canvasTrustFunctions]: AuthTerminalOperateScope,
+  [WS_METHODS.canvasLibrarySave]: AuthFilesystemWriteScope,
+  [WS_METHODS.canvasLibraryOpen]: AuthFilesystemWriteScope,
+  [WS_METHODS.canvasLibraryRemove]: AuthFilesystemWriteScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

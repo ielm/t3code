@@ -19,26 +19,29 @@ const snapshot: CanvasSnapshot = {
   manifestIssue: "canvas.json is not valid JSON.",
 };
 
-// The page reports every canvas message it receives as an event, so the test observes the
-// host's posts through `onEvent`. A blob URL cannot carry the revision query, so this is a data URL.
+// The page reports every canvas message it receives as a state patch, so the test observes the
+// host's posts through `onSetState`. A blob URL cannot carry the revision query, so this is a data URL.
 const PAGE_URL = `data:text/html,${encodeURIComponent(`<script>
   var v = ${CANVAS_BRIDGE_VERSION};
   addEventListener("message", function (e) {
     if (e.source === parent && e.data && e.data.t3canvas === v) {
-      parent.postMessage({ t3canvas: v, type: "event", event: "received", payload: e.data }, "*");
+      parent.postMessage({ t3canvas: v, type: "setState", patch: { received: e.data } }, "*");
     }
   });
   parent.postMessage({ t3canvas: v, type: "ready" }, "*");
+  parent.postMessage({ t3canvas: v, type: "event", event: "unasked" }, "*");
 </script>`)}`;
 
-it("answers the page's ready with init, forwards its events, and posts later state", async () => {
-  const onEvent = vi.fn();
+it("answers the page's ready with init, posts later state, and drops an event nobody pressed for", async () => {
+  const onSetState = vi.fn();
+  const onLog = vi.fn();
   const handlers = {
-    onSetState: vi.fn(),
-    onEvent,
+    onSetState,
+    onEvent: vi.fn(),
     onCall: vi.fn(),
-    onLog: vi.fn(),
+    onLog,
     onOpenLink: vi.fn(),
+    onTrustFunctions: null,
   };
   await using screen = await render(
     <CanvasPanel snapshot={snapshot} url={PAGE_URL} {...handlers} />,
@@ -50,10 +53,8 @@ it("answers the page's ready with init, forwards its events, and posts later sta
     .element(screen.getByRole("alert"))
     .toHaveTextContent("canvas.json is not valid JSON.");
   await vi.waitFor(() =>
-    expect(onEvent).toHaveBeenCalledWith({
-      event: "received",
-      pageRevision: 3,
-      payload: {
+    expect(onSetState).toHaveBeenCalledWith({
+      received: {
         t3canvas: CANVAS_BRIDGE_VERSION,
         type: "init",
         name: "board",
@@ -64,6 +65,11 @@ it("answers the page's ready with init, forwards its events, and posts later sta
       },
     }),
   );
+  expect(onLog).toHaveBeenCalledWith({
+    level: "warning",
+    text: expect.stringContaining('"unasked"'),
+  });
+  expect(handlers.onEvent).not.toHaveBeenCalled();
 
   await screen.rerender(
     <CanvasPanel
@@ -73,10 +79,8 @@ it("answers the page's ready with init, forwards its events, and posts later sta
     />,
   );
   await vi.waitFor(() =>
-    expect(onEvent).toHaveBeenCalledWith({
-      event: "received",
-      pageRevision: 3,
-      payload: {
+    expect(onSetState).toHaveBeenCalledWith({
+      received: {
         t3canvas: CANVAS_BRIDGE_VERSION,
         type: "state",
         state: { count: 2 },

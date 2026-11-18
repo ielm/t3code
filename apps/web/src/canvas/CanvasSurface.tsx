@@ -19,6 +19,7 @@ import { CanvasPanel } from "./CanvasPanel";
 import {
   canvasClientOrigin,
   canvasUrlNeedsMint,
+  canvasUrlRenewalDelay,
   type MintedCanvasUrl,
   resolveCanvasUrl,
 } from "./canvasUrl";
@@ -56,6 +57,12 @@ export default function CanvasSurface(props: {
   const sendEvent = useAtomCommand(canvasEnvironment.sendEvent, { reportFailure: false });
   const call = useAtomCommand(canvasEnvironment.call, { reportFailure: false });
   const log = useAtomCommand(canvasEnvironment.log, { reportFailure: false });
+  const trustFunctions = useAtomCommand(canvasEnvironment.trustFunctions, {
+    reportFailure: false,
+  });
+  const canTrustFunctions = useAtomValue(
+    canvasEnvironment.trustFunctions.permissionAtom(environmentId),
+  );
   const openChangeRequestLink = useOpenChangeRequestLink(threadRef);
   const openLink = useOpenLink(threadRef);
 
@@ -97,6 +104,22 @@ export default function CanvasSurface(props: {
   const sessionGeneration = environmentCatalog.sessionGenerationAtom(environmentId);
   useAtomMount(sessionGeneration);
   useAtomSubscribe(sessionGeneration, () => mintIfNeeded(origin, pageRevision));
+  // Renewing the URL ahead of its expiry reloads the page once: a page keeps the URL it loaded.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules the signed URL's renewal on a browser timer
+  useEffect(() => {
+    if (minted === null) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      const delay = canvasUrlRenewalDelay(minted, Date.now());
+      if (delay === null) return;
+      timer = setTimeout(() => {
+        mintIfNeeded(origin, pageRevision);
+        arm();
+      }, delay);
+    };
+    arm();
+    return () => clearTimeout(timer);
+  }, [minted, origin, pageRevision]);
 
   if (snapshot === null) return <CanvasPlaceholder>Loading canvas…</CanvasPlaceholder>;
   const url = minted !== null && minted.origin === origin ? minted.url : null;
@@ -152,6 +175,21 @@ export default function CanvasSurface(props: {
         );
         if (!handled) void openLink(url, { event: modifiers }).catch(logFailure);
       }}
+      onTrustFunctions={
+        canTrustFunctions
+          ? () =>
+              trustFunctions({ environmentId, input: target }).then((result) => {
+                if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Canvas functions not enabled",
+                    description: canvasCommandFailure(result.cause).message,
+                  }),
+                );
+              })
+          : null
+      }
     />
   );
 }
