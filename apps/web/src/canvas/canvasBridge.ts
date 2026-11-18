@@ -42,18 +42,19 @@ export interface CanvasGestureSample {
 }
 
 /**
- * Above the five seconds transient activation lasts in Chromium, Firefox and WebKit. Activation
- * still reported this long after an accepted action must come from input newer than that action.
+ * A deliberate trade. Transient activation lasts about five seconds, so only a wait longer than
+ * that proves a new press. That would refuse a real second click for five seconds, so this allows
+ * one privileged action per second and accepts that one press can pay for a few of them.
  */
-export const CANVAS_GESTURE_REARM_MS = 5_500;
+export const CANVAS_GESTURE_REARM_MS = 1_000;
 
 type CanvasGestureVerdict = "accepted" | "no-gesture" | "spent";
 
 /**
- * Lets one click or key press in a canvas pay for one privileged action: an event, a `change`
- * function call or a link. A window shows only whether it saw input recently, not which input, so
- * after an action is accepted the next waits until activation is seen to lapse or has outlived
- * `CANVAS_GESTURE_REARM_MS`. A second press sooner than that is refused with the first.
+ * Rate-limits privileged actions (an event, a `change` function call or a link) behind a click or
+ * key press in a canvas. A window shows only whether it saw input recently, not which input, so
+ * after an action is accepted the next waits until activation is seen to lapse or
+ * `CANVAS_GESTURE_REARM_MS` has passed. A second press sooner than that is refused.
  */
 export function createCanvasGestureGate() {
   let acceptedAt: number | undefined;
