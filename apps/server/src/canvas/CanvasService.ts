@@ -205,10 +205,11 @@ const make = Effect.gen(function* () {
       Effect.all({
         folder: store.get({ threadId, name }),
         persisted: store.readState({ threadId, name }),
-        revealId: nextId,
+        freshRevealId: nextId,
       }),
     );
-    for (const { folder, persisted, revealId } of stored) {
+    for (const { folder, persisted, freshRevealId } of stored) {
+      const revealId = persisted?.revealId ?? freshRevealId;
       thread.canvases.set(folder.name, {
         folder,
         openTitle: undefined,
@@ -261,7 +262,7 @@ const make = Effect.gen(function* () {
             : { state: input.state, stateRevision: stored.stateRevision + 1 };
         const revealId = yield* nextId;
         return yield* Effect.gen(function* () {
-          if (input.state !== undefined) yield* store.writeState({ ...target, ...persisted });
+          yield* store.writeState({ ...target, ...persisted, revealId });
           const live: LiveCanvas = {
             folder,
             openTitle: input.title ?? existing?.openTitle,
@@ -316,6 +317,7 @@ const make = Effect.gen(function* () {
               name: input.name,
               state,
               stateRevision: next.stateRevision,
+              revealId: next.revealId,
             })
             .pipe(Effect.andThen(put(thread, next)), Effect.uninterruptible);
           return toSnapshot(next);

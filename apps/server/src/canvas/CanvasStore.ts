@@ -41,6 +41,8 @@ export interface CanvasFolder extends CanvasTarget {
 export interface CanvasPersistedState {
   readonly state: CanvasState;
   readonly stateRevision: number;
+  /** Kept so a server restart does not look like a new request to show the canvas. */
+  readonly revealId?: string | undefined;
 }
 
 /**
@@ -86,7 +88,11 @@ const ATOMIC_WRITE_TEMP_PREFIX = "t3-write-";
 const isCanvasName = Schema.is(CanvasName);
 
 const PersistedStateJson = Schema.fromJsonString(
-  Schema.Struct({ state: CanvasState, stateRevision: NonNegativeInt }),
+  Schema.Struct({
+    state: CanvasState,
+    stateRevision: NonNegativeInt,
+    revealId: Schema.optional(Schema.String),
+  }),
 );
 const decodePersistedState = Schema.decodeUnknownEffect(PersistedStateJson);
 const encodePersistedState = Schema.encodeEffect(PersistedStateJson);
@@ -328,6 +334,7 @@ const make = Effect.gen(function* () {
       const contents = yield* encodePersistedState({
         state: input.state,
         stateRevision: input.stateRevision,
+        ...(input.revealId === undefined ? {} : { revealId: input.revealId }),
       }).pipe(Effect.mapError(storageFailed(input.name)));
       yield* writeFileStringAtomically({ filePath: statePath(input), contents }).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),

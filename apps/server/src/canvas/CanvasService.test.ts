@@ -75,9 +75,13 @@ const makeHarness = Effect.sync(() => {
     changes: (target) => Stream.unwrap(Effect.map(changesOf(target), Stream.fromQueue)),
     resolveFile: (input) => Effect.succeed(`/canvases/${keyOf(input)}/${input.path}`),
     readState: (target) => Effect.sync(() => states.get(keyOf(target)) ?? null),
-    writeState: ({ state, stateRevision, ...target }) =>
+    writeState: ({ state, stateRevision, revealId, ...target }) =>
       Effect.sync(() => {
-        states.set(keyOf(target), { state, stateRevision });
+        states.set(keyOf(target), {
+          state,
+          stateRevision,
+          ...(revealId === undefined ? {} : { revealId }),
+        });
       }),
     remove: (target) =>
       Effect.sync(() => {
@@ -178,6 +182,7 @@ it.effect("merges patches into the state, bumping and persisting the revision", 
       expect(harness.states.get(keyOf(board))).toEqual({
         state: patched.state,
         stateRevision: 2,
+        revealId: patched.revealId,
       });
 
       const reopened = yield* canvases.open(board);
@@ -211,7 +216,10 @@ it.effect("rejects state over the size limit and keeps what was stored", () =>
         state: { count: 1 },
         stateRevision: 1,
       });
-      expect(harness.states.get(keyOf(board))).toEqual({ state: { count: 1 }, stateRevision: 1 });
+      expect(harness.states.get(keyOf(board))).toMatchObject({
+        state: { count: 1 },
+        stateRevision: 1,
+      });
     }).pipe(Effect.provide(harness.layer));
   }),
 );
@@ -251,11 +259,15 @@ it.effect("streams a snapshot and then every later change, losing none while sub
 it.effect("restores a thread's canvases from the store after a restart", () =>
   Effect.gen(function* () {
     const harness = yield* makeHarness;
-    yield* Effect.gen(function* () {
+    const shown = yield* Effect.gen(function* () {
       const canvases = yield* CanvasService.CanvasService;
       yield* canvases.open({ ...board, state: { count: 1 } });
       yield* canvases.patchState({ ...board, patch: { count: 2 } });
-      yield* canvases.open(notes);
+      const openedNotes = yield* canvases.open(notes);
+      return {
+        board: (yield* canvases.get(board)).snapshot.revealId,
+        notes: openedNotes.snapshot.revealId,
+      };
     }).pipe(Effect.provide(harness.layer));
 
     yield* Effect.gen(function* () {
@@ -264,8 +276,14 @@ it.effect("restores a thread's canvases from the store after a restart", () =>
       expect(first).toMatchObject({
         _tag: "snapshot",
         canvases: [
-          { name: "board", state: { count: 2 }, stateRevision: 2, pageRevision: 0 },
-          { name: "notes", state: {}, stateRevision: 0, pageRevision: 0 },
+          {
+            name: "board",
+            state: { count: 2 },
+            stateRevision: 2,
+            pageRevision: 0,
+            revealId: shown.board,
+          },
+          { name: "notes", state: {}, stateRevision: 0, pageRevision: 0, revealId: shown.notes },
         ],
       });
       const patched = yield* canvases.patchState({ ...board, patch: { count: 3 } });
