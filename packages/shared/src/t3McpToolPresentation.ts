@@ -399,6 +399,9 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   html_render: tool(["Render", "Rendering", "Rendered", "an HTML page"], "html-render"),
   canvas_open: tool(["Open", "Opening", "Opened", "a canvas"], "canvas"),
   canvas_state: tool(["Update", "Updating", "Updated", "a canvas"], "canvas"),
+  canvas_read: tool(["Read", "Reading", "Read", "a canvas"], "canvas"),
+  canvas_wait: tool(["Wait", "Waiting", "Waited", "for a canvas action"], "canvas"),
+  canvas_save: tool(["Save", "Saving", "Saved", "a canvas"], "canvas"),
   canvas_close: tool(["Close", "Closing", "Closed", "a canvas"], "canvas"),
   send_to_user: tool(["Send", "Sending", "Sent", "a message"], "send-to-user"),
 };
