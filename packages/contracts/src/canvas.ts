@@ -124,7 +124,11 @@ const CanvasTarget = {
 export const CanvasSubscribeInput = Schema.Struct({ threadId: ThreadId });
 export type CanvasSubscribeInput = typeof CanvasSubscribeInput.Type;
 
-export const CanvasUrlInput = Schema.Struct(CanvasTarget);
+export const CanvasUrlInput = Schema.Struct({
+  ...CanvasTarget,
+  /** Scheme, host and port the client loads the environment from. Signed into the page's CSP. */
+  origin: Schema.String.check(Schema.isPattern(/^https?:\/\/[^\s/?#]+$/)),
+});
 export type CanvasUrlInput = typeof CanvasUrlInput.Type;
 
 export const CanvasUrlResult = Schema.Struct({
